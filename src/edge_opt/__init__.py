@@ -29,6 +29,17 @@ from .profiling import (
     benchmark_callable,
     operator_flops,
 )
+from .torch_integration import (
+    QATConfig,
+    QATPreparationReport,
+    TorchMagnitudePruner,
+    convert_qat,
+    export_int8_bundle,
+    freeze_qat_observers,
+    is_torch_available,
+    prepare_qat,
+    set_fake_quantization,
+)
 
 __all__ = [
     "AccuracyBudgetExceeded",
@@ -50,19 +61,28 @@ __all__ = [
     "OperatorSpec",
     "PolynomialPruningSchedule",
     "PruningStepResult",
+    "QATConfig",
+    "QATPreparationReport",
     "QuantizationConfig",
     "QuantizationParams",
     "RepresentativeCalibrator",
     "RooflineProfiler",
     "TensorSpec",
+    "TorchMagnitudePruner",
     "benchmark_callable",
+    "convert_qat",
     "dequantize",
     "estimate_sparse_storage",
+    "export_int8_bundle",
     "fake_quantize",
+    "freeze_qat_observers",
+    "is_torch_available",
     "load_builtin_profile",
     "measured_sparsity",
     "operator_flops",
+    "prepare_qat",
     "quantize",
+    "set_fake_quantization",
 ]
 
 __version__ = "0.1.0"
