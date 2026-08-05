@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib.resources import as_file, files
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .core import DType
 from .errors import ConfigurationError
-
 
 BUILTIN_PROFILES = ("arm_cortex_a76",)
 
@@ -22,7 +22,7 @@ def load_builtin_profile(name: str) -> HardwareProfile:
         raise ConfigurationError(
             f"unknown built-in profile {name!r}; choose one of {', '.join(BUILTIN_PROFILES)}"
         )
-    resource = files("edge_opt").joinpath("profiles", f"{name}.json")
+    resource = files("edge_opt").joinpath("profiles").joinpath(f"{name}.json")
     with as_file(resource) as path:
         return HardwareProfile.from_json(path)
 
@@ -85,8 +85,11 @@ class HardwareProfile:
             raise ConfigurationError("peak compute values must be positive")
         if not self.memory_tiers:
             raise ConfigurationError("hardware profile needs at least one memory tier")
-        finite_tiers = [tier for tier in self.memory_tiers if tier.capacity_bytes is not None]
-        capacities = [tier.capacity_bytes for tier in finite_tiers]
+        capacities = [
+            int(tier.capacity_bytes)
+            for tier in self.memory_tiers
+            if tier.capacity_bytes is not None
+        ]
         if capacities != sorted(capacities):
             raise ConfigurationError("memory tiers must be ordered by increasing capacity")
         if self.memory_tiers[-1].capacity_bytes is not None:

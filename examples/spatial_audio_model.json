@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "task": "generative encoder-decoder / spatial audio latent pipeline"
+  },
+  "name": "spatial-audio-latent-pipeline",
+  "operators": [
+    {
+      "attributes": {},
+      "inputs": [
+        {"dtype": "fp32", "name": "audio_embedding", "shape": [1, 4096]}
+      ],
+      "kind": "linear",
+      "name": "encoder_projection",
+      "output": {"dtype": "fp32", "name": "encoded", "shape": [1, 4096]},
+      "sparsity": 0.0,
+      "weight_dtype": "fp32",
+      "weight_shape": [4096, 4096]
+    },
+    {
+      "attributes": {},
+      "inputs": [
+        {"dtype": "fp32", "name": "encoded", "shape": [1, 4096]}
+      ],
+      "kind": "linear",
+      "name": "latent_mixer",
+      "output": {"dtype": "fp32", "name": "latent", "shape": [1, 4096]},
+      "sparsity": 0.0,
+      "weight_dtype": "fp32",
+      "weight_shape": [4096, 4096]
+    },
+    {
+      "attributes": {},
+      "inputs": [
+        {"dtype": "fp32", "name": "latent", "shape": [1, 4096]}
+      ],
+      "kind": "linear",
+      "name": "decoder_projection",
+      "output": {"dtype": "fp32", "name": "spatial_output", "shape": [1, 1280]},
+      "sparsity": 0.0,
+      "weight_dtype": "fp32",
+      "weight_shape": [1280, 4096]
+    }
+  ]
+}
+

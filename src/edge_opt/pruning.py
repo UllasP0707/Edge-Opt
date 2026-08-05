@@ -56,9 +56,11 @@ class PolynomialPruningSchedule:
         if step >= self.end_step:
             return self.final_sparsity
         progress = (step - self.begin_step) / (self.end_step - self.begin_step)
-        return self.final_sparsity + (
-            self.initial_sparsity - self.final_sparsity
-        ) * (1.0 - progress) ** self.power
+        return float(
+            self.final_sparsity
+            + (self.initial_sparsity - self.final_sparsity)
+            * (1.0 - progress) ** self.power
+        )
 
     def is_update_step(self, step: int) -> bool:
         if step < self.begin_step or step > self.end_step:
@@ -75,7 +77,7 @@ def measured_sparsity(weights: Mapping[str, npt.ArrayLike]) -> float:
         array = np.asarray(values)
         total += array.size
         zeros += int(np.count_nonzero(array == 0))
-    return zeros / total if total else 0.0
+    return float(zeros / total) if total else 0.0
 
 
 @dataclass(frozen=True)

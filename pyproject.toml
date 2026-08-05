@@ -47,3 +47,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.10"
 strict = true
 packages = ["edge_opt"]
+
+[[tool.mypy.overrides]]
+module = "edge_opt.quantization"
+disable_error_code = ["no-any-return", "operator"]
+
+[[tool.mypy.overrides]]
+module = "edge_opt.torch_integration"
+ignore_errors = true

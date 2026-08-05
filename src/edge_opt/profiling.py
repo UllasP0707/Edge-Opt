@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from .core import DType, ModelSpec, OperatorKind, OperatorSpec
+from .core import ModelSpec, OperatorKind, OperatorSpec
 from .errors import ConfigurationError
 from .hardware import HardwareProfile, MemoryTier
 from .pruning import estimate_sparse_storage

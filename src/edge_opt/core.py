@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import reduce
 from operator import mul
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from .errors import ConfigurationError
 
@@ -191,4 +192,3 @@ class ModelSpec:
             operators=tuple(OperatorSpec.from_dict(item) for item in value["operators"]),
             metadata=value.get("metadata", {}),
         )
-

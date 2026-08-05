@@ -45,10 +45,7 @@ class QualityConstraint:
     def assess(self, baseline: float, optimized: float) -> QualityAssessment:
         if not math.isfinite(baseline) or not math.isfinite(optimized):
             raise ConfigurationError("quality measurements must be finite")
-        if self.higher_is_better:
-            degradation = baseline - optimized
-        else:
-            degradation = optimized - baseline
+        degradation = baseline - optimized if self.higher_is_better else optimized - baseline
         equal_to_limit = math.isclose(
             degradation, self.max_degradation, rel_tol=0.0, abs_tol=1e-12
         )
