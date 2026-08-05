@@ -95,7 +95,9 @@ class EntropyCalibrationTests(unittest.TestCase):
             table.to_json(path)
             restored = CalibrationTable.from_dict(json.loads(path.read_text()))
         self.assertEqual(restored.samples, table.samples)
-        np.testing.assert_allclose(restored.tensors["encoder"].scale, table.tensors["encoder"].scale)
+        np.testing.assert_allclose(
+            restored.tensors["encoder"].scale, table.tensors["encoder"].scale
+        )
 
 
 if __name__ == "__main__":

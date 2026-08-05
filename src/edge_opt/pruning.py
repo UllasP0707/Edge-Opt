@@ -190,7 +190,9 @@ class MagnitudePruner:
         for name, array in arrays.items():
             prior = self.masks.get(name)
             if prior is not None and prior.shape != array.shape:
-                raise ConfigurationError(f"weight tensor {name!r} changed shape after pruning began")
+                raise ConfigurationError(
+                    f"weight tensor {name!r} changed shape after pruning began"
+                )
             masks[name] = (
                 np.ones_like(array, dtype=np.bool_)
                 if prior is None or self.allow_regrowth
@@ -314,4 +316,3 @@ class MagnitudePruner:
         self.masks = masks
         last_step = state.get("last_step")
         self.last_step = int(last_step) if last_step is not None else None
-

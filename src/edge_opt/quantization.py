@@ -199,8 +199,12 @@ class MinMaxObserver:
             current_max = np.asarray(np.nanmax(finite))
         if self.minimum is not None and current_min.shape != self.minimum.shape:
             raise ConfigurationError("observer channel count changed between batches")
-        self.minimum = current_min if self.minimum is None else np.minimum(self.minimum, current_min)
-        self.maximum = current_max if self.maximum is None else np.maximum(self.maximum, current_max)
+        self.minimum = (
+            current_min if self.minimum is None else np.minimum(self.minimum, current_min)
+        )
+        self.maximum = (
+            current_max if self.maximum is None else np.maximum(self.maximum, current_max)
+        )
 
     def calculate_qparams(self) -> QuantizationParams:
         if self.minimum is None or self.maximum is None:
@@ -406,8 +410,9 @@ class RepresentativeCalibrator:
         if self._samples == 0:
             raise ConfigurationError("representative dataset is empty")
         return CalibrationTable(
-            tensors={name: observer.calculate_qparams() for name, observer in self._observers.items()},
+            tensors={
+                name: observer.calculate_qparams() for name, observer in self._observers.items()
+            },
             method=self.method,
             samples=self._samples,
         )
-

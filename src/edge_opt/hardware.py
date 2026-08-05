@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Mapping
 
 from .core import DType
 from .errors import ConfigurationError
+
+
+BUILTIN_PROFILES = ("arm_cortex_a76",)
+
+
+def load_builtin_profile(name: str) -> HardwareProfile:
+    """Load an analytical reference profile packaged with Edge-Opt."""
+
+    if name not in BUILTIN_PROFILES:
+        raise ConfigurationError(
+            f"unknown built-in profile {name!r}; choose one of {', '.join(BUILTIN_PROFILES)}"
+        )
+    resource = files("edge_opt").joinpath("profiles", f"{name}.json")
+    with as_file(resource) as path:
+        return HardwareProfile.from_json(path)
 
 
 @dataclass(frozen=True)
@@ -62,7 +78,9 @@ class HardwareProfile:
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ConfigurationError("hardware profile name must not be empty")
-        normalized_compute = {DType(dtype): float(value) for dtype, value in self.peak_ops_per_second.items()}
+        normalized_compute = {
+            DType(dtype): float(value) for dtype, value in self.peak_ops_per_second.items()
+        }
         if not normalized_compute or any(value <= 0 for value in normalized_compute.values()):
             raise ConfigurationError("peak compute values must be positive")
         if not self.memory_tiers:
@@ -123,4 +141,3 @@ class HardwareProfile:
         with destination.open("w", encoding="utf-8") as handle:
             json.dump(self.to_dict(), handle, indent=2, sort_keys=True)
             handle.write("\n")
-

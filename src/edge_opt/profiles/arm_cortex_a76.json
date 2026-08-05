@@ -1,0 +1,37 @@
+{
+  "memory_tiers": [
+    {
+      "bandwidth_bytes_per_second": 128000000000.0,
+      "capacity_bytes": 65536,
+      "latency_seconds": 1e-09,
+      "name": "L1"
+    },
+    {
+      "bandwidth_bytes_per_second": 64000000000.0,
+      "capacity_bytes": 524288,
+      "latency_seconds": 4e-09,
+      "name": "L2"
+    },
+    {
+      "bandwidth_bytes_per_second": 20000000000.0,
+      "capacity_bytes": null,
+      "latency_seconds": 8e-08,
+      "name": "DRAM"
+    }
+  ],
+  "metadata": {
+    "description": "Analytical Cortex-A76-class reference with a simulated INT8 vector engine",
+    "source": "illustrative-default; replace throughput and bandwidth with target measurements"
+  },
+  "name": "ARM Cortex-A76 reference / simulated INT8 engine",
+  "peak_ops_per_second": {
+    "bf16": 51200000000.0,
+    "fp16": 51200000000.0,
+    "fp32": 25600000000.0,
+    "int8": 204800000000.0,
+    "uint8": 204800000000.0
+  },
+  "sparse_compute_supported": true,
+  "sparse_storage_supported": true
+}
+
