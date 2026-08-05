@@ -40,6 +40,14 @@ from .torch_integration import (
     prepare_qat,
     set_fake_quantization,
 )
+from .pipeline import (
+    OptimizationConfig,
+    OptimizationPipeline,
+    OptimizationResult,
+    QualityAssessment,
+    QualityConstraint,
+    optimize_model_spec,
+)
 
 __all__ = [
     "AccuracyBudgetExceeded",
@@ -59,10 +67,15 @@ __all__ = [
     "OperatorKind",
     "OperatorProfile",
     "OperatorSpec",
+    "OptimizationConfig",
+    "OptimizationPipeline",
+    "OptimizationResult",
     "PolynomialPruningSchedule",
     "PruningStepResult",
     "QATConfig",
     "QATPreparationReport",
+    "QualityAssessment",
+    "QualityConstraint",
     "QuantizationConfig",
     "QuantizationParams",
     "RepresentativeCalibrator",
@@ -80,6 +93,7 @@ __all__ = [
     "load_builtin_profile",
     "measured_sparsity",
     "operator_flops",
+    "optimize_model_spec",
     "prepare_qat",
     "quantize",
     "set_fake_quantization",
