@@ -14,6 +14,13 @@ from .quantization import (
     fake_quantize,
     quantize,
 )
+from .pruning import (
+    MagnitudePruner,
+    PolynomialPruningSchedule,
+    PruningStepResult,
+    estimate_sparse_storage,
+    measured_sparsity,
+)
 
 __all__ = [
     "AccuracyBudgetExceeded",
@@ -25,15 +32,20 @@ __all__ = [
     "MinMaxObserver",
     "HardwareProfile",
     "MemoryTier",
+    "MagnitudePruner",
     "ModelSpec",
     "OperatorKind",
     "OperatorSpec",
+    "PolynomialPruningSchedule",
+    "PruningStepResult",
     "QuantizationConfig",
     "QuantizationParams",
     "RepresentativeCalibrator",
     "TensorSpec",
     "dequantize",
+    "estimate_sparse_storage",
     "fake_quantize",
+    "measured_sparsity",
     "quantize",
 ]
 
