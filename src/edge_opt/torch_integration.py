@@ -20,6 +20,7 @@ from .activation import ActivationStatisticsTable, ChannelStatsObserver
 from .errors import ConfigurationError
 from .pruning import MagnitudePruner, PolynomialPruningSchedule, PruningStepResult
 from .quantization import QuantizationConfig
+from .structured import NMPruner, NMPruningPattern, NMPruningResult
 from .wanda import WandaPruner, WandaPruningResult
 
 try:
@@ -192,6 +193,9 @@ if TORCH_AVAILABLE:
             self.out_features = module.out_features
             self.weight = module.weight
             self.bias = module.bias
+            self.edge_opt_sparsity_pattern = getattr(
+                module, "edge_opt_sparsity_pattern", None
+            )
             self.input_fake_quant = TorchFakeQuantizer(
                 QuantizationConfig(
                     bits=config.activation_bits,
@@ -244,6 +248,9 @@ if TORCH_AVAILABLE:
             self.padding_mode = module.padding_mode
             self.weight = module.weight
             self.bias = module.bias
+            self.edge_opt_sparsity_pattern = getattr(
+                module, "edge_opt_sparsity_pattern", None
+            )
             self.input_fake_quant = TorchFakeQuantizer(
                 QuantizationConfig(
                     bits=config.activation_bits,
@@ -354,6 +361,7 @@ if TORCH_AVAILABLE:
             super().__init__()
             self.in_features = module.in_features
             self.out_features = module.out_features
+            self.edge_opt_sparsity_pattern = module.edge_opt_sparsity_pattern
             self._initialize_quantized_state(module)
             if module.bias is None:
                 self.register_buffer("bias", None)
@@ -378,6 +386,7 @@ if TORCH_AVAILABLE:
             self.padding = module.padding
             self.dilation = module.dilation
             self.groups = module.groups
+            self.edge_opt_sparsity_pattern = module.edge_opt_sparsity_pattern
             self._initialize_quantized_state(module)
             if module.bias is None:
                 self.register_buffer("bias", None)
@@ -688,9 +697,10 @@ class TorchWandaPruner:
         sparsity: float = 0.5,
         *,
         module_names: Iterable[str] | None = None,
+        pattern: NMPruningPattern | None = None,
     ) -> None:
         _require_torch()
-        self.pruner = WandaPruner(sparsity)
+        self.pruner = WandaPruner(sparsity, pattern=pattern)
         self.module_names = set(module_names) if module_names is not None else None
 
     def prune(
@@ -725,6 +735,51 @@ class TorchWandaPruner:
             for name, module in modules.items():
                 mask = torch.as_tensor(result.masks[name], device=module.weight.device)
                 module.weight.mul_(mask)
+                if self.pruner.pattern is not None:
+                    module.edge_opt_sparsity_pattern = self.pruner.pattern.label
+        return target, result
+
+
+class TorchNMPruner:
+    """Apply magnitude-scored N:M masks to selected PyTorch linear modules."""
+
+    def __init__(
+        self,
+        pattern: NMPruningPattern,
+        *,
+        module_names: Iterable[str] | None = None,
+    ) -> None:
+        _require_torch()
+        self.pruner = NMPruner(pattern)
+        self.module_names = set(module_names) if module_names is not None else None
+
+    def prune(self, model: Any, *, inplace: bool = False) -> tuple[Any, NMPruningResult]:
+        target = model if inplace else copy.deepcopy(model)
+        modules: dict[str, Any] = {}
+        for qualified_name, module in target.named_modules():
+            name = qualified_name or "root"
+            if not isinstance(module, (nn.Linear, QATLinear)):
+                continue
+            if self.module_names is not None and name not in self.module_names:
+                continue
+            modules[name] = module
+        if not modules:
+            raise ConfigurationError("model has no selected linear modules for N:M pruning")
+        if self.module_names is not None:
+            missing = self.module_names - set(modules)
+            if missing:
+                raise ConfigurationError(
+                    f"requested N:M modules were not found: {', '.join(sorted(missing))}"
+                )
+        weights = {
+            name: module.weight.detach().cpu().numpy() for name, module in modules.items()
+        }
+        result = self.pruner.compute_masks(weights)
+        with torch.no_grad():
+            for name, module in modules.items():
+                mask = torch.as_tensor(result.masks[name], device=module.weight.device)
+                module.weight.mul_(mask)
+                module.edge_opt_sparsity_pattern = self.pruner.pattern.label
         return target, result
 
 
@@ -747,7 +802,7 @@ def export_int8_bundle(model: Any, directory: str | Path) -> Path:
         )
         if module.bias is not None:
             arrays[f"{prefix}.bias"] = module.bias.detach().cpu().numpy()
-        manifest["modules"][name] = {
+        module_manifest = {
             "type": type(module).__name__,
             "qweight": f"{prefix}.qweight",
             "weight_scale": f"{prefix}.weight_scale",
@@ -757,6 +812,9 @@ def export_int8_bundle(model: Any, directory: str | Path) -> Path:
             "qmin": module.qmin,
             "qmax": module.qmax,
         }
+        if module.edge_opt_sparsity_pattern is not None:
+            module_manifest["sparsity_pattern"] = module.edge_opt_sparsity_pattern
+        manifest["modules"][name] = module_manifest
     if not manifest["modules"]:
         raise ConfigurationError("model does not contain converted INT8 modules")
     np.savez(destination / "weights.npz", **arrays)

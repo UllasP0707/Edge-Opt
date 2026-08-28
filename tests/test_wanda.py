@@ -6,6 +6,7 @@ import numpy as np
 
 from edge_opt.activation import ChannelStatistics
 from edge_opt.errors import ConfigurationError
+from edge_opt.structured import NMPruningPattern, validate_nm_mask
 from edge_opt.wanda import WandaPruner, wanda_mask, wanda_scores
 
 
@@ -65,6 +66,14 @@ class WandaPrunerTests(unittest.TestCase):
     def test_missing_statistics_fail_closed(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "missing Wanda"):
             WandaPruner().compute_masks({"layer": np.ones((2, 2))}, {})
+
+    def test_wanda_scores_can_be_constrained_to_two_of_four(self) -> None:
+        weights = {"layer": np.asarray([[1.0, 2.0, 3.0, 4.0] * 2])}
+        _, result = WandaPruner(
+            0.5, pattern=NMPruningPattern(2, 4)
+        ).prune(weights, {"layer": np.asarray([100.0, 1.0, 1.0, 1.0] * 2)})
+        self.assertTrue(validate_nm_mask(result.masks["layer"], NMPruningPattern(2, 4)))
+        self.assertTrue(bool(result.masks["layer"][0, 0]))
 
 
 if __name__ == "__main__":

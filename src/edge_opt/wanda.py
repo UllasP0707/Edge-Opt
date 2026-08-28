@@ -10,6 +10,7 @@ import numpy.typing as npt
 
 from .activation import ChannelStatistics
 from .errors import ConfigurationError
+from .structured import NMPruningPattern, nm_mask
 
 FloatArray = npt.NDArray[np.float64]
 Mask = npt.NDArray[np.bool_]
@@ -54,12 +55,22 @@ def wanda_mask(
     weights: npt.ArrayLike,
     input_statistics: ChannelStatistics | npt.ArrayLike,
     sparsity: float,
+    pattern: NMPruningPattern | None = None,
 ) -> Mask:
     """Select the lowest Wanda scores independently in every output row."""
 
     if not 0.0 <= sparsity < 1.0:
         raise ConfigurationError("Wanda sparsity must be in [0, 1)")
     scores = wanda_scores(weights, input_statistics)
+    if pattern is not None:
+        if pattern.axis % scores.ndim != scores.ndim - 1:
+            raise ConfigurationError("Wanda N:M grouping must use the input-feature axis")
+        if not np.isclose(sparsity, pattern.sparsity):
+            raise ConfigurationError(
+                f"Wanda sparsity {sparsity} does not match {pattern.label} "
+                f"sparsity {pattern.sparsity}"
+            )
+        return nm_mask(scores, pattern)
     pruned_per_row = int(scores.shape[1] * sparsity)
     mask = np.ones(scores.shape, dtype=np.bool_)
     if pruned_per_row == 0:
@@ -86,10 +97,21 @@ class WandaPruningResult:
 class WandaPruner:
     """One-shot Wanda pruning over named linear weight tensors."""
 
-    def __init__(self, sparsity: float = 0.5) -> None:
+    def __init__(
+        self,
+        sparsity: float = 0.5,
+        *,
+        pattern: NMPruningPattern | None = None,
+    ) -> None:
         if not 0.0 <= sparsity < 1.0:
             raise ConfigurationError("Wanda sparsity must be in [0, 1)")
         self.sparsity = sparsity
+        self.pattern = pattern
+        if pattern is not None and not np.isclose(sparsity, pattern.sparsity):
+            raise ConfigurationError(
+                f"Wanda sparsity {sparsity} does not match {pattern.label} "
+                f"sparsity {pattern.sparsity}"
+            )
 
     def compute_masks(
         self,
@@ -110,7 +132,12 @@ class WandaPruner:
         for name in sorted(weights):
             if not name:
                 raise ConfigurationError("Wanda weight names must not be empty")
-            mask = wanda_mask(weights[name], activation_statistics[name], self.sparsity)
+            mask = wanda_mask(
+                weights[name],
+                activation_statistics[name],
+                self.sparsity,
+                self.pattern,
+            )
             layer_pruned = mask.size - int(np.count_nonzero(mask))
             masks[name] = mask
             layer_sparsity[name] = layer_pruned / mask.size
@@ -142,4 +169,3 @@ class WandaPruner:
             destination *= result.masks[name]
             pruned[name] = destination
         return pruned, result
-

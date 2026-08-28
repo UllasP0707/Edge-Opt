@@ -9,6 +9,7 @@ import numpy as np
 
 from edge_opt.errors import ConfigurationError
 from edge_opt.pruning import PolynomialPruningSchedule
+from edge_opt.structured import NMPruningPattern, validate_nm_mask
 from edge_opt.torch_integration import (
     PackedLinear,
     QATConfig,
@@ -16,6 +17,7 @@ from edge_opt.torch_integration import (
     TorchActivationStatsCollector,
     TorchFakeQuantizer,
     TorchMagnitudePruner,
+    TorchNMPruner,
     TorchWandaPruner,
     collect_torch_activation_statistics,
     convert_qat,
@@ -120,6 +122,26 @@ class TorchQATTests(unittest.TestCase):
         self.assertEqual(float(pruned.weight[0, 0].detach()), 1.0)
         self.assertEqual(float(pruned.weight[0, 1].detach()), 0.0)
         self.assertEqual(float(model.weight[0, 1].detach()), 2.0)
+
+    def test_torch_nm_pruner_enforces_two_of_four_and_tags_module(self) -> None:
+        model = nn.Linear(8, 2, bias=False)
+        pruned, result = TorchNMPruner(NMPruningPattern(2, 4)).prune(model)
+        self.assertTrue(validate_nm_mask(result.masks["root"], result.pattern))
+        self.assertEqual(int(torch.count_nonzero(pruned.weight)), 8)
+        self.assertEqual(pruned.edge_opt_sparsity_pattern, "2:4")
+
+    def test_structured_wanda_pattern_survives_int8_export(self) -> None:
+        prepared, _ = prepare_qat(nn.Linear(4, 2, bias=False))
+        sample = torch.tensor([[100.0, 1.0, 1.0, 1.0]])
+        stats = collect_torch_activation_statistics(prepared, [sample])
+        pruned, _ = TorchWandaPruner(
+            0.5, pattern=NMPruningPattern(2, 4)
+        ).prune(prepared, stats)
+        converted = convert_qat(pruned)
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = export_int8_bundle(converted, directory)
+            manifest = json.loads(manifest_path.read_text())
+        self.assertEqual(manifest["modules"][""]["sparsity_pattern"], "2:4")
 
 
 if __name__ == "__main__":
