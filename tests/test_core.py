@@ -13,6 +13,7 @@ from edge_opt import (
     ModelSpec,
     OperatorKind,
     OperatorSpec,
+    SparseComputeCapability,
     TensorSpec,
 )
 
@@ -61,7 +62,16 @@ class HardwareProfileTests(unittest.TestCase):
                 MemoryTier("L2", 512 * 1024, 16e9, 5e-9),
                 MemoryTier("DRAM", None, 4e9, 80e-9),
             ),
-            sparse_compute_supported=True,
+            sparse_compute_capabilities=(
+                SparseComputeCapability(
+                    OperatorKind.LINEAR,
+                    DType.INT8,
+                    "2:4",
+                    8e9,
+                    "test sparse kernel",
+                    "measured",
+                ),
+            ),
         )
 
     def test_json_round_trip(self) -> None:
@@ -72,6 +82,13 @@ class HardwareProfileTests(unittest.TestCase):
             restored = HardwareProfile.from_json(path)
         self.assertEqual(restored, profile)
         self.assertEqual(restored.peak_compute(DType.INT8), 4e9)
+        self.assertEqual(restored.sparse_compute_capabilities[0].pattern, "2:4")
+
+    def test_legacy_blanket_sparse_flag_is_rejected(self) -> None:
+        value = self.make_profile().to_dict()
+        value["sparse_compute_supported"] = True
+        with self.assertRaisesRegex(ConfigurationError, "no longer accepted"):
+            HardwareProfile.from_dict(value)
 
     def test_tiers_require_unbounded_backing_memory(self) -> None:
         with self.assertRaises(ConfigurationError):

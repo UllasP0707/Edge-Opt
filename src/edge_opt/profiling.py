@@ -17,6 +17,7 @@ from .core import ModelSpec, OperatorKind, OperatorSpec
 from .errors import ConfigurationError
 from .hardware import HardwareProfile, MemoryTier
 from .pruning import estimate_sparse_storage
+from .structured import NMPruningPattern
 
 Bottleneck = Literal["compute", "memory"]
 
@@ -105,6 +106,31 @@ def weight_storage(operator: OperatorSpec, hardware: HardwareProfile) -> WeightS
         )
         encoded_bytes = estimate.sparse_bytes
         metadata_bytes = estimate.index_bytes
+    elif encoding == "nm":
+        pattern_label = operator.attributes.get("sparsity_pattern")
+        if not isinstance(pattern_label, str):
+            raise ConfigurationError("N:M storage requires a sparsity_pattern attribute")
+        try:
+            n_text, m_text = pattern_label.split(":", maxsplit=1)
+            pattern = NMPruningPattern(int(n_text), int(m_text))
+        except (ValueError, TypeError) as exc:
+            raise ConfigurationError(
+                f"invalid N:M sparsity pattern {pattern_label!r}"
+            ) from exc
+        if not np.isclose(operator.sparsity, pattern.sparsity):
+            raise ConfigurationError(
+                f"operator sparsity does not match declared {pattern.label} pattern"
+            )
+        if operator.weight_elements % pattern.m:
+            raise ConfigurationError("N:M weight count is not divisible by group size")
+        groups = operator.weight_elements // pattern.m
+        nonzero = groups * pattern.n
+        value_bytes = (nonzero * operator.weight_dtype.bits + 7) // 8
+        metadata_bytes = (
+            groups * pattern.minimum_metadata_bits_per_group + 7
+        ) // 8
+        encoded_bytes = value_bytes + metadata_bytes
+        encoding = f"nm-{pattern.label}"
     elif encoding == "dense":
         encoded_bytes = dense_bytes
         metadata_bytes = 0
@@ -149,6 +175,10 @@ class OperatorProfile:
     memory_time_seconds: float
     predicted_latency_seconds: float
     bottleneck: Bottleneck
+    sparse_compute_accelerated: bool
+    sparsity_pattern: str | None
+    compute_backend: str | None
+    compute_performance_source: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +202,10 @@ class OperatorProfile:
             "memory_time_seconds": self.memory_time_seconds,
             "predicted_latency_seconds": self.predicted_latency_seconds,
             "bottleneck": self.bottleneck,
+            "sparse_compute_accelerated": self.sparse_compute_accelerated,
+            "sparsity_pattern": self.sparsity_pattern,
+            "compute_backend": self.compute_backend,
+            "compute_performance_source": self.compute_performance_source,
         }
 
 
@@ -235,11 +269,12 @@ class ModelProfile:
             f"- Encoded weights: {self.weight_bytes:,} bytes "
             f"({self.weight_compression_ratio:.2f}x compression)",
             "",
-            "| Operator | Tier | Encoding | Ops/byte | Bound | Latency (ms) |",
-            "|---|---:|---:|---:|---:|---:|",
+            "| Operator | Tier | Encoding | Sparse kernel | Ops/byte | Bound | Latency (ms) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
         lines.extend(
             f"| {item.name} | {item.memory_tier} | {item.weight_encoding} | "
+            f"{item.compute_backend or 'none'} | "
             f"{item.operational_intensity:.3f} | {item.bottleneck} | "
             f"{item.predicted_latency_seconds * 1_000:.3f} |"
             for item in self.operators
@@ -255,7 +290,8 @@ class RooflineProfiler:
 
     def profile_operator(self, operator: OperatorSpec) -> OperatorProfile:
         dense_flops = operator_flops(operator)
-        if self.hardware.sparse_compute_supported:
+        sparse_capability = self.hardware.sparse_capability(operator)
+        if sparse_capability is not None:
             executed_flops = int(np.ceil(dense_flops * (1.0 - operator.sparsity)))
         else:
             executed_flops = dense_flops
@@ -268,11 +304,18 @@ class RooflineProfiler:
         arithmetic_dtype = (
             operator.weight_dtype if operator.weight_elements else operator.output.dtype
         )
-        peak_compute = self.hardware.peak_compute(arithmetic_dtype)
-        intensity = executed_flops / total_bytes if total_bytes else float("inf")
+        peak_compute = (
+            sparse_capability.effective_peak_ops_per_second
+            if sparse_capability is not None
+            else self.hardware.peak_compute(arithmetic_dtype)
+        )
+        # Roofline work is expressed as dense-equivalent useful operations. A sparse
+        # capability advertises an effective peak, while executed_flops records the
+        # nonzero physical work for diagnostics.
+        intensity = dense_flops / total_bytes if total_bytes else float("inf")
         ridge_point = peak_compute / tier.bandwidth_bytes_per_second
         attainable = min(peak_compute, tier.bandwidth_bytes_per_second * intensity)
-        compute_time = executed_flops / peak_compute
+        compute_time = dense_flops / peak_compute
         memory_time = total_bytes / tier.bandwidth_bytes_per_second + tier.latency_seconds
         bottleneck: Bottleneck = "compute" if compute_time >= memory_time else "memory"
         predicted = max(compute_time, memory_time)
@@ -297,6 +340,14 @@ class RooflineProfiler:
             memory_time_seconds=memory_time,
             predicted_latency_seconds=predicted,
             bottleneck=bottleneck,
+            sparse_compute_accelerated=sparse_capability is not None,
+            sparsity_pattern=operator.attributes.get("sparsity_pattern"),
+            compute_backend=sparse_capability.backend if sparse_capability else None,
+            compute_performance_source=(
+                sparse_capability.performance_source
+                if sparse_capability
+                else "dense_profile"
+            ),
         )
 
     def profile(self, model: ModelSpec) -> ModelProfile:
@@ -315,7 +366,7 @@ class RooflineProfiler:
             total_bytes=total_bytes,
             weight_bytes=weight_bytes,
             dense_weight_bytes=dense_weight_bytes,
-            operational_intensity=executed_flops / total_bytes if total_bytes else float("inf"),
+            operational_intensity=dense_flops / total_bytes if total_bytes else float("inf"),
             predicted_latency_seconds=sum(
                 operator.predicted_latency_seconds for operator in operators
             ),

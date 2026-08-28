@@ -15,6 +15,7 @@ from .errors import EdgeOptError
 from .hardware import BUILTIN_PROFILES, HardwareProfile, load_builtin_profile
 from .pipeline import OptimizationConfig, OptimizationPipeline, QualityConstraint
 from .profiling import RooflineProfiler
+from .structured import NMPruningPattern
 
 
 def _load_model(path: str | Path) -> ModelSpec:
@@ -96,14 +97,29 @@ def _command_profile(arguments: argparse.Namespace) -> int:
 
 
 def _pipeline_from_arguments(arguments: argparse.Namespace) -> OptimizationPipeline:
+    pattern = None
+    if arguments.sparsity_pattern:
+        try:
+            n_text, m_text = arguments.sparsity_pattern.split(":", maxsplit=1)
+            pattern = NMPruningPattern(int(n_text), int(m_text))
+        except (ValueError, TypeError) as exc:
+            raise EdgeOptError("--sparsity-pattern must use N:M notation") from exc
+    target_sparsity = (
+        arguments.target_sparsity
+        if arguments.target_sparsity is not None
+        else pattern.sparsity
+        if pattern is not None
+        else 0.65
+    )
     return OptimizationPipeline(
         _load_hardware(arguments.hardware),
         OptimizationConfig(
-            target_sparsity=arguments.target_sparsity,
+            target_sparsity=target_sparsity,
             weight_dtype=DType(arguments.weight_dtype),
             activation_dtype=DType(arguments.activation_dtype),
             sparse_encoding=arguments.sparse_encoding,
             calibration_method=arguments.calibration,
+            sparsity_pattern=pattern,
         ),
         QualityConstraint(
             metric_name=arguments.metric,
@@ -185,7 +201,11 @@ def build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--metric", default="accuracy")
     optimize.add_argument("--lower-is-better", action="store_true")
     optimize.add_argument("--max-degradation", type=float, default=0.01)
-    optimize.add_argument("--target-sparsity", type=float, default=0.65)
+    optimize.add_argument("--target-sparsity", type=float)
+    optimize.add_argument(
+        "--sparsity-pattern",
+        help="hardware-oriented retained-value pattern such as 2:4",
+    )
     optimize.add_argument("--weight-dtype", choices=("int8", "int4"), default="int8")
     optimize.add_argument("--activation-dtype", choices=("int8", "uint8"), default="int8")
     optimize.add_argument(

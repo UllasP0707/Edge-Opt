@@ -20,6 +20,7 @@ from .quantization import (
     QuantizationConfig,
     RepresentativeCalibrator,
 )
+from .structured import NMPruningPattern
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class OptimizationConfig:
     activation_dtype: DType = DType.INT8
     sparse_encoding: str = "bitmap"
     calibration_method: str = "entropy"
+    sparsity_pattern: NMPruningPattern | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.weight_dtype, DType):
@@ -112,10 +114,22 @@ class OptimizationConfig:
             raise ConfigurationError("optimized weights must be INT8 or INT4")
         if self.activation_dtype not in {DType.INT8, DType.UINT8}:
             raise ConfigurationError("optimized activations must be INT8 or UINT8")
-        if self.sparse_encoding not in {"bitmap", "coordinate", "ideal", "dense"}:
+        if self.sparse_encoding not in {"bitmap", "coordinate", "ideal", "dense", "nm"}:
             raise ConfigurationError("unsupported sparse encoding")
         if self.calibration_method not in {"entropy", "minmax"}:
             raise ConfigurationError("calibration method must be entropy or minmax")
+        if self.sparsity_pattern is not None:
+            if not math.isclose(
+                self.target_sparsity,
+                self.sparsity_pattern.sparsity,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise ConfigurationError(
+                    f"target sparsity must equal {self.sparsity_pattern.sparsity} for "
+                    f"{self.sparsity_pattern.label} pruning"
+                )
+            object.__setattr__(self, "sparse_encoding", "nm")
 
 
 def _quantized_tensor(tensor: TensorSpec, dtype: DType) -> TensorSpec:
@@ -131,6 +145,9 @@ def optimize_model_spec(model: ModelSpec, config: OptimizationConfig) -> ModelSp
         attributes = dict(operator.attributes)
         if weighted and config.target_sparsity > 0:
             attributes["sparse_encoding"] = config.sparse_encoding
+            if config.sparsity_pattern is not None:
+                attributes["sparsity_pattern"] = config.sparsity_pattern.label
+                attributes["sparsity_pattern_axis"] = config.sparsity_pattern.axis
         optimized.append(
             OperatorSpec(
                 name=operator.name,
@@ -152,6 +169,9 @@ def optimize_model_spec(model: ModelSpec, config: OptimizationConfig) -> ModelSp
         "weight_dtype": config.weight_dtype.value,
         "activation_dtype": config.activation_dtype.value,
         "sparse_encoding": config.sparse_encoding,
+        "sparsity_pattern": (
+            config.sparsity_pattern.to_dict() if config.sparsity_pattern else None
+        ),
     }
     return ModelSpec(f"{model.name}-optimized", tuple(optimized), metadata)
 
@@ -190,6 +210,11 @@ class OptimizationResult:
                 "activation_dtype": self.config.activation_dtype.value,
                 "sparse_encoding": self.config.sparse_encoding,
                 "calibration_method": self.config.calibration_method,
+                "sparsity_pattern": (
+                    self.config.sparsity_pattern.to_dict()
+                    if self.config.sparsity_pattern
+                    else None
+                ),
             },
             "comparison": {
                 "predicted_speedup": self.predicted_speedup,

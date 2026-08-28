@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
 
-from .core import DType
+from .core import DType, OperatorKind, OperatorSpec
 from .errors import ConfigurationError
+from .structured import NMPruningPattern
 
-BUILTIN_PROFILES = ("arm_cortex_a76",)
+BUILTIN_PROFILES = ("arm_cortex_a76", "nvidia_a100_reference")
 
 
 def load_builtin_profile(name: str) -> HardwareProfile:
@@ -65,13 +67,85 @@ class MemoryTier:
 
 
 @dataclass(frozen=True)
+class SparseComputeCapability:
+    """One target kernel that accelerates an exact sparsity pattern."""
+
+    operator_kind: OperatorKind
+    weight_dtype: DType
+    pattern: str
+    effective_peak_ops_per_second: float
+    backend: str
+    performance_source: str = "vendor_spec"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operator_kind, OperatorKind):
+            object.__setattr__(self, "operator_kind", OperatorKind(self.operator_kind))
+        if not isinstance(self.weight_dtype, DType):
+            object.__setattr__(self, "weight_dtype", DType(self.weight_dtype))
+        self.parsed_pattern()
+        if self.effective_peak_ops_per_second <= 0:
+            raise ConfigurationError("sparse effective peak compute must be positive")
+        if not self.backend.strip():
+            raise ConfigurationError("sparse compute capability backend must not be empty")
+        if self.performance_source not in {"measured", "vendor_spec", "analytical"}:
+            raise ConfigurationError(
+                "sparse performance_source must be measured, vendor_spec, or analytical"
+            )
+
+    def parsed_pattern(self) -> NMPruningPattern:
+        try:
+            n_text, m_text = self.pattern.split(":", maxsplit=1)
+            return NMPruningPattern(int(n_text), int(m_text))
+        except (ValueError, TypeError) as exc:
+            raise ConfigurationError(
+                f"invalid sparse compute pattern {self.pattern!r}; expected N:M"
+            ) from exc
+
+    def matches(self, operator: OperatorSpec) -> bool:
+        if (
+            operator.kind is not self.operator_kind
+            or operator.weight_dtype is not self.weight_dtype
+        ):
+            return False
+        if operator.attributes.get("sparsity_pattern") != self.pattern:
+            return False
+        return math.isclose(
+            operator.sparsity,
+            self.parsed_pattern().sparsity,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operator_kind": self.operator_kind.value,
+            "weight_dtype": self.weight_dtype.value,
+            "pattern": self.pattern,
+            "effective_peak_ops_per_second": self.effective_peak_ops_per_second,
+            "backend": self.backend,
+            "performance_source": self.performance_source,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> SparseComputeCapability:
+        return cls(
+            operator_kind=OperatorKind(value["operator_kind"]),
+            weight_dtype=DType(value["weight_dtype"]),
+            pattern=str(value["pattern"]),
+            effective_peak_ops_per_second=float(value["effective_peak_ops_per_second"]),
+            backend=str(value["backend"]),
+            performance_source=str(value.get("performance_source", "vendor_spec")),
+        )
+
+
+@dataclass(frozen=True)
 class HardwareProfile:
     """Compute throughput and ordered memory hierarchy for a target device."""
 
     name: str
     peak_ops_per_second: Mapping[DType, float]
     memory_tiers: tuple[MemoryTier, ...]
-    sparse_compute_supported: bool = False
+    sparse_compute_capabilities: tuple[SparseComputeCapability, ...] = ()
     sparse_storage_supported: bool = True
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -95,6 +169,9 @@ class HardwareProfile:
         if self.memory_tiers[-1].capacity_bytes is not None:
             raise ConfigurationError("last memory tier must be unbounded (usually DRAM)")
         object.__setattr__(self, "peak_ops_per_second", normalized_compute)
+        object.__setattr__(
+            self, "sparse_compute_capabilities", tuple(self.sparse_compute_capabilities)
+        )
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     def peak_compute(self, dtype: DType) -> float:
@@ -107,6 +184,21 @@ class HardwareProfile:
                 f"hardware profile {self.name!r} has no throughput for {dtype.value}"
             ) from exc
 
+    def sparse_capability(self, operator: OperatorSpec) -> SparseComputeCapability | None:
+        """Return an exact matching sparse kernel, never a blanket sparsity assumption."""
+
+        matches = [
+            capability
+            for capability in self.sparse_compute_capabilities
+            if capability.matches(operator)
+        ]
+        if len(matches) > 1:
+            raise ConfigurationError(
+                f"hardware profile {self.name!r} has duplicate sparse capabilities for "
+                f"operator {operator.name!r}"
+            )
+        return matches[0] if matches else None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -114,13 +206,20 @@ class HardwareProfile:
                 dtype.value: value for dtype, value in self.peak_ops_per_second.items()
             },
             "memory_tiers": [tier.to_dict() for tier in self.memory_tiers],
-            "sparse_compute_supported": self.sparse_compute_supported,
+            "sparse_compute_capabilities": [
+                capability.to_dict() for capability in self.sparse_compute_capabilities
+            ],
             "sparse_storage_supported": self.sparse_storage_supported,
             "metadata": dict(self.metadata),
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> HardwareProfile:
+        if value.get("sparse_compute_supported"):
+            raise ConfigurationError(
+                "sparse_compute_supported is unsafe and no longer accepted; declare exact "
+                "sparse_compute_capabilities instead"
+            )
         return cls(
             name=value["name"],
             peak_ops_per_second={
@@ -128,7 +227,10 @@ class HardwareProfile:
                 for dtype, throughput in value["peak_ops_per_second"].items()
             },
             memory_tiers=tuple(MemoryTier.from_dict(item) for item in value["memory_tiers"]),
-            sparse_compute_supported=bool(value.get("sparse_compute_supported", False)),
+            sparse_compute_capabilities=tuple(
+                SparseComputeCapability.from_dict(item)
+                for item in value.get("sparse_compute_capabilities", ())
+            ),
             sparse_storage_supported=bool(value.get("sparse_storage_supported", True)),
             metadata=value.get("metadata", {}),
         )

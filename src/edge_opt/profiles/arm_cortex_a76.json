@@ -31,7 +31,6 @@
     "int8": 204800000000.0,
     "uint8": 204800000000.0
   },
-  "sparse_compute_supported": true,
+  "sparse_compute_capabilities": [],
   "sparse_storage_supported": true
 }
-

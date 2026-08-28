@@ -8,7 +8,13 @@ from .activation import (
 )
 from .core import DType, ModelSpec, OperatorKind, OperatorSpec, TensorSpec
 from .errors import AccuracyBudgetExceeded, ConfigurationError, EdgeOptError
-from .hardware import BUILTIN_PROFILES, HardwareProfile, MemoryTier, load_builtin_profile
+from .hardware import (
+    BUILTIN_PROFILES,
+    HardwareProfile,
+    MemoryTier,
+    SparseComputeCapability,
+    load_builtin_profile,
+)
 from .pipeline import (
     OptimizationConfig,
     OptimizationPipeline,
@@ -99,6 +105,7 @@ __all__ = [
     "QuantizationParams",
     "RepresentativeCalibrator",
     "RooflineProfiler",
+    "SparseComputeCapability",
     "TensorSpec",
     "TorchActivationStatsCollector",
     "TorchMagnitudePruner",

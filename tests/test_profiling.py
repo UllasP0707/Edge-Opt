@@ -11,13 +11,24 @@ from edge_opt import (
     ModelSpec,
     OperatorKind,
     OperatorSpec,
+    SparseComputeCapability,
     TensorSpec,
 )
 from edge_opt.hardware import load_builtin_profile
 from edge_opt.profiling import RooflineProfiler, benchmark_callable, operator_flops
 
 
-def target(*, sparse_compute: bool = True) -> HardwareProfile:
+def target(*, structured_compute: bool = False) -> HardwareProfile:
+    capabilities = (
+        SparseComputeCapability(
+            OperatorKind.LINEAR,
+            DType.INT8,
+            "2:4",
+            800e9,
+            "test 2:4 kernel",
+            "measured",
+        ),
+    ) if structured_compute else ()
     return HardwareProfile(
         "test-target",
         {DType.FP32: 100e9, DType.INT8: 400e9},
@@ -26,7 +37,7 @@ def target(*, sparse_compute: bool = True) -> HardwareProfile:
             MemoryTier("L2", 2_048, 20e9),
             MemoryTier("DRAM", None, 1e9),
         ),
-        sparse_compute_supported=sparse_compute,
+        sparse_compute_capabilities=capabilities,
     )
 
 
@@ -41,7 +52,7 @@ class OperatorProfilingTests(unittest.TestCase):
         )
         self.assertEqual(operator_flops(operator), 48)
 
-    def test_quantization_and_sparsity_reduce_working_set_and_compute(self) -> None:
+    def test_unstructured_sparsity_reduces_storage_but_not_compute(self) -> None:
         fp32 = OperatorSpec(
             "projection",
             OperatorKind.LINEAR,
@@ -65,7 +76,8 @@ class OperatorProfilingTests(unittest.TestCase):
         self.assertEqual(baseline.memory_tier, "DRAM")
         self.assertEqual(result.memory_tier, "DRAM")
         self.assertLess(result.working_set_bytes, baseline.working_set_bytes)
-        self.assertEqual(result.executed_flops, baseline.dense_flops // 4)
+        self.assertEqual(result.executed_flops, result.dense_flops)
+        self.assertFalse(result.sparse_compute_accelerated)
         self.assertEqual(result.weight_encoding, "bitmap")
         self.assertGreater(result.sparse_metadata_bytes, 0)
 
@@ -93,7 +105,7 @@ class OperatorProfilingTests(unittest.TestCase):
         self.assertEqual(profiler.profile_operator(medium).memory_tier, "L2")
         self.assertEqual(profiler.profile_operator(large).memory_tier, "DRAM")
 
-    def test_unsupported_sparse_compute_retains_dense_flops(self) -> None:
+    def test_exact_two_of_four_capability_enables_sparse_compute(self) -> None:
         operator = OperatorSpec(
             "linear",
             OperatorKind.LINEAR,
@@ -102,8 +114,31 @@ class OperatorProfilingTests(unittest.TestCase):
             weight_shape=(16, 16),
             weight_dtype=DType.INT8,
             sparsity=0.5,
+            attributes={"sparse_encoding": "nm", "sparsity_pattern": "2:4"},
         )
-        profile = RooflineProfiler(target(sparse_compute=False)).profile_operator(operator)
+        unsupported = RooflineProfiler(target()).profile_operator(operator)
+        supported = RooflineProfiler(target(structured_compute=True)).profile_operator(operator)
+        self.assertEqual(unsupported.executed_flops, unsupported.dense_flops)
+        self.assertFalse(unsupported.sparse_compute_accelerated)
+        self.assertEqual(supported.executed_flops, supported.dense_flops // 2)
+        self.assertTrue(supported.sparse_compute_accelerated)
+        self.assertEqual(supported.compute_backend, "test 2:4 kernel")
+        self.assertEqual(supported.compute_performance_source, "measured")
+        self.assertEqual(supported.weight_encoding, "nm-2:4")
+
+    def test_capability_does_not_match_unstructured_or_wrong_dtype(self) -> None:
+        operator = OperatorSpec(
+            "linear",
+            OperatorKind.LINEAR,
+            (TensorSpec((1, 16), DType.FP32),),
+            TensorSpec((1, 16), DType.FP32),
+            weight_shape=(16, 16),
+            weight_dtype=DType.FP32,
+            sparsity=0.5,
+            attributes={"sparse_encoding": "bitmap", "sparsity_pattern": "2:4"},
+        )
+        profile = RooflineProfiler(target(structured_compute=True)).profile_operator(operator)
+        self.assertFalse(profile.sparse_compute_accelerated)
         self.assertEqual(profile.executed_flops, profile.dense_flops)
 
 
@@ -129,6 +164,12 @@ class ModelProfileTests(unittest.TestCase):
         profile = load_builtin_profile("arm_cortex_a76")
         self.assertIn("illustrative-default", profile.metadata["source"])
         self.assertGreater(profile.peak_compute(DType.INT8), profile.peak_compute(DType.FP32))
+        self.assertEqual(profile.sparse_compute_capabilities, ())
+
+    def test_a100_reference_only_accelerates_declared_two_of_four_kernel(self) -> None:
+        profile = load_builtin_profile("nvidia_a100_reference")
+        self.assertIn("not measured", profile.metadata["warning"].lower())
+        self.assertTrue(profile.sparse_compute_capabilities)
 
 
 class BenchmarkTests(unittest.TestCase):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ import numpy as np
 
 from edge_opt import DType, ModelSpec, OperatorKind, OperatorSpec, TensorSpec
 from edge_opt.cli import main
-from edge_opt.errors import AccuracyBudgetExceeded
+from edge_opt.errors import AccuracyBudgetExceeded, ConfigurationError
 from edge_opt.hardware import load_builtin_profile
 from edge_opt.pipeline import (
     OptimizationConfig,
@@ -16,6 +17,7 @@ from edge_opt.pipeline import (
     QualityConstraint,
     optimize_model_spec,
 )
+from edge_opt.structured import NMPruningPattern
 
 
 def tiny_model() -> ModelSpec:
@@ -55,6 +57,26 @@ class OptimizationPipelineTests(unittest.TestCase):
         self.assertEqual(operator.inputs[0].dtype, DType.INT8)
         self.assertEqual(operator.sparsity, 0.75)
         self.assertEqual(operator.attributes["sparse_encoding"], "bitmap")
+
+    def test_static_transform_exports_structured_sparsity_metadata(self) -> None:
+        optimized = optimize_model_spec(
+            tiny_model(),
+            OptimizationConfig(
+                target_sparsity=0.5,
+                sparsity_pattern=NMPruningPattern(2, 4),
+            ),
+        )
+        operator = optimized.operators[0]
+        self.assertEqual(operator.attributes["sparse_encoding"], "nm")
+        self.assertEqual(operator.attributes["sparsity_pattern"], "2:4")
+        self.assertEqual(operator.sparsity, 0.5)
+
+    def test_structured_pattern_rejects_mismatched_target(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "target sparsity must equal"):
+            OptimizationConfig(
+                target_sparsity=0.65,
+                sparsity_pattern=NMPruningPattern(2, 4),
+            )
 
     def test_pipeline_calibrates_profiles_and_accepts_within_budget(self) -> None:
         pipeline = OptimizationPipeline(load_builtin_profile("arm_cortex_a76"))
@@ -107,7 +129,33 @@ class CliTests(unittest.TestCase):
             )
         self.assertEqual(status, 2)
 
+    def test_cli_derives_sparsity_from_two_of_four_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model.json"
+            output_path = Path(directory) / "result.json"
+            model_path.write_text(json.dumps(tiny_model().to_dict()))
+            status = main(
+                [
+                    "optimize",
+                    str(model_path),
+                    "--baseline-quality",
+                    "0.9",
+                    "--optimized-quality",
+                    "0.895",
+                    "--sparsity-pattern",
+                    "2:4",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output_path),
+                ]
+            )
+            result = json.loads(output_path.read_text())
+        self.assertEqual(status, 0)
+        self.assertEqual(result["optimization"]["target_sparsity"], 0.5)
+        attributes = result["optimized_model"]["operators"][0]["attributes"]
+        self.assertEqual(attributes["sparsity_pattern"], "2:4")
+
 
 if __name__ == "__main__":
     unittest.main()
-

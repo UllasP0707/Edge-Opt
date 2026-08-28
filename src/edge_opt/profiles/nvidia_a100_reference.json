@@ -1,0 +1,61 @@
+{
+  "memory_tiers": [
+    {
+      "bandwidth_bytes_per_second": 19000000000000.0,
+      "capacity_bytes": 196608,
+      "latency_seconds": 1e-09,
+      "name": "L1/shared"
+    },
+    {
+      "bandwidth_bytes_per_second": 5000000000000.0,
+      "capacity_bytes": 41943040,
+      "latency_seconds": 2e-08,
+      "name": "L2"
+    },
+    {
+      "bandwidth_bytes_per_second": 1555000000000.0,
+      "capacity_bytes": null,
+      "latency_seconds": 3e-07,
+      "name": "HBM2"
+    }
+  ],
+  "metadata": {
+    "description": "Analytical A100 40GB reference with vendor-spec dense and 2:4 Tensor Core peaks",
+    "source": "vendor-spec compute/HBM values with illustrative cache bandwidth and latency",
+    "warning": "Predictions are not measured end-to-end latency"
+  },
+  "name": "NVIDIA A100 40GB reference",
+  "peak_ops_per_second": {
+    "bf16": 312000000000000.0,
+    "fp16": 312000000000000.0,
+    "fp32": 19500000000000.0,
+    "int8": 624000000000000.0
+  },
+  "sparse_compute_capabilities": [
+    {
+      "backend": "Ampere Sparse Tensor Cores",
+      "effective_peak_ops_per_second": 1248000000000000.0,
+      "operator_kind": "linear",
+      "pattern": "2:4",
+      "performance_source": "vendor_spec",
+      "weight_dtype": "int8"
+    },
+    {
+      "backend": "Ampere Sparse Tensor Cores",
+      "effective_peak_ops_per_second": 1248000000000000.0,
+      "operator_kind": "matmul",
+      "pattern": "2:4",
+      "performance_source": "vendor_spec",
+      "weight_dtype": "int8"
+    },
+    {
+      "backend": "Ampere Sparse Tensor Cores",
+      "effective_peak_ops_per_second": 624000000000000.0,
+      "operator_kind": "linear",
+      "pattern": "2:4",
+      "performance_source": "vendor_spec",
+      "weight_dtype": "fp16"
+    }
+  ],
+  "sparse_storage_supported": true
+}
