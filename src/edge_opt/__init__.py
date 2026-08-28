@@ -48,6 +48,7 @@ from .torch_integration import (
     QATPreparationReport,
     TorchActivationStatsCollector,
     TorchMagnitudePruner,
+    TorchWandaPruner,
     collect_torch_activation_statistics,
     convert_qat,
     export_int8_bundle,
@@ -56,6 +57,7 @@ from .torch_integration import (
     prepare_qat,
     set_fake_quantization,
 )
+from .wanda import WandaPruner, WandaPruningResult, wanda_mask, wanda_scores
 
 __all__ = [
     "AccuracyBudgetExceeded",
@@ -95,6 +97,9 @@ __all__ = [
     "TensorSpec",
     "TorchActivationStatsCollector",
     "TorchMagnitudePruner",
+    "TorchWandaPruner",
+    "WandaPruner",
+    "WandaPruningResult",
     "benchmark_callable",
     "collect_torch_activation_statistics",
     "convert_qat",
@@ -111,6 +116,8 @@ __all__ = [
     "prepare_qat",
     "quantize",
     "set_fake_quantization",
+    "wanda_mask",
+    "wanda_scores",
 ]
 
 __version__ = "0.1.0"

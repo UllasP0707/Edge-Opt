@@ -20,6 +20,7 @@ from .activation import ActivationStatisticsTable, ChannelStatsObserver
 from .errors import ConfigurationError
 from .pruning import MagnitudePruner, PolynomialPruningSchedule, PruningStepResult
 from .quantization import QuantizationConfig
+from .wanda import WandaPruner, WandaPruningResult
 
 try:
     import torch
@@ -677,6 +678,54 @@ class TorchMagnitudePruner:
         for name, mask in self._torch_masks.items():
             if parameters[name].grad is not None:
                 parameters[name].grad.mul_(mask)
+
+
+class TorchWandaPruner:
+    """Apply one-shot Wanda pruning to selected PyTorch linear modules."""
+
+    def __init__(
+        self,
+        sparsity: float = 0.5,
+        *,
+        module_names: Iterable[str] | None = None,
+    ) -> None:
+        _require_torch()
+        self.pruner = WandaPruner(sparsity)
+        self.module_names = set(module_names) if module_names is not None else None
+
+    def prune(
+        self,
+        model: Any,
+        activation_statistics: ActivationStatisticsTable,
+        *,
+        inplace: bool = False,
+    ) -> tuple[Any, WandaPruningResult]:
+        target = model if inplace else copy.deepcopy(model)
+        modules: dict[str, Any] = {}
+        for qualified_name, module in target.named_modules():
+            name = qualified_name or "root"
+            if not isinstance(module, (nn.Linear, QATLinear)):
+                continue
+            if self.module_names is not None and name not in self.module_names:
+                continue
+            modules[name] = module
+        if not modules:
+            raise ConfigurationError("model has no selected linear modules for Wanda pruning")
+        if self.module_names is not None:
+            missing = self.module_names - set(modules)
+            if missing:
+                raise ConfigurationError(
+                    f"requested Wanda modules were not found: {', '.join(sorted(missing))}"
+                )
+        weights = {
+            name: module.weight.detach().cpu().numpy() for name, module in modules.items()
+        }
+        result = self.pruner.compute_masks(weights, activation_statistics.tensors)
+        with torch.no_grad():
+            for name, module in modules.items():
+                mask = torch.as_tensor(result.masks[name], device=module.weight.device)
+                module.weight.mul_(mask)
+        return target, result
 
 
 def export_int8_bundle(model: Any, directory: str | Path) -> Path:

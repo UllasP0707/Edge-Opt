@@ -16,6 +16,7 @@ from edge_opt.torch_integration import (
     TorchActivationStatsCollector,
     TorchFakeQuantizer,
     TorchMagnitudePruner,
+    TorchWandaPruner,
     collect_torch_activation_statistics,
     convert_qat,
     export_int8_bundle,
@@ -104,6 +105,21 @@ class TorchQATTests(unittest.TestCase):
             TorchActivationStatsCollector(
                 self.make_model(), module_names={"missing"}
             ).attach()
+
+    def test_torch_wanda_uses_collected_activation_statistics(self) -> None:
+        model = nn.Linear(4, 2, bias=False)
+        with torch.no_grad():
+            model.weight.copy_(torch.tensor([[1.0, 2.0, 3.0, 4.0]] * 2))
+        stats = collect_torch_activation_statistics(
+            model,
+            [torch.tensor([[100.0, 1.0, 1.0, 1.0]])],
+        )
+        pruned, result = TorchWandaPruner(0.5).prune(model, stats)
+        self.assertEqual(result.actual_sparsity, 0.5)
+        self.assertEqual(int(torch.count_nonzero(pruned.weight)), 4)
+        self.assertEqual(float(pruned.weight[0, 0].detach()), 1.0)
+        self.assertEqual(float(pruned.weight[0, 1].detach()), 0.0)
+        self.assertEqual(float(model.weight[0, 1].detach()), 2.0)
 
 
 if __name__ == "__main__":
