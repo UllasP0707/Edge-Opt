@@ -22,9 +22,11 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: ruff check src tests examples
+      - run: python -m mypy src/edge_opt
       - run: python -m pytest
       - run: python -m build
       - run: edge-opt demo --output-dir /tmp/edge-opt-demo
+      - run: python examples/advanced_optimization.py --output-dir /tmp/edge-opt-advanced
 
   torch:
     runs-on: ubuntu-latest
@@ -38,4 +40,3 @@ jobs:
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest tests/test_torch_integration.py
-

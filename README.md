@@ -6,8 +6,11 @@ targeting constrained CPUs, NPUs, DSPs, and Edge TPU-class runtimes. It combines
 - quantization-aware training (QAT) with straight-through-estimator fake quantization;
 - streaming min/max and KL-divergence (entropy) activation calibration;
 - deterministic magnitude pruning with a polynomial decay schedule;
+- activation-aware Wanda pruning using per-input-channel calibration statistics;
+- N:M semi-structured masks, including hardware-oriented 2:4 sparsity;
+- SmoothQuant channel balancing with optional LayerNorm folding;
 - sparse encoding estimates that include index or bitmap metadata;
-- cache-aware roofline analysis across L1, L2, and off-chip DRAM;
+- exact pattern/dtype/kernel capability matching in cache-aware roofline analysis;
 - measured micro-benchmark distributions; and
 - a fail-closed quality gate whose default is strict degradation `< 0.01`.
 
@@ -54,6 +57,17 @@ and a Markdown report. The current analytical demo produces:
 These are reproducible analytical outputs from the bundled reference profile, not measured silicon
 claims. Bitmap metadata is included in the optimized size, which is why the result is larger than
 the ideal zero-free payload.
+
+Run the deterministic modern-method comparison:
+
+```bash
+python examples/advanced_optimization.py --output-dir reports/advanced
+```
+
+This evaluates magnitude pruning, Wanda, Wanda 2:4, and Wanda 2:4 + SmoothQuant on the same
+synthetic fixture. Its quality column is labeled `synthetic_fixture`, while every latency and
+speedup column is labeled `analytical_prediction`. It is regression evidence for the algorithms,
+not a real-model accuracy or measured-board benchmark.
 
 Profile a model graph directly:
 
@@ -130,6 +144,43 @@ compiler/runtime for accelerated execution.
 
 See [examples/qat_workflow.py](examples/qat_workflow.py) for a runnable toy training loop.
 
+## Activation-aware optimization
+
+One representative-data pass now supplies both Wanda's input-channel L2 norms and SmoothQuant's
+input-channel absolute maxima:
+
+```python
+from edge_opt import (
+    NMPruningPattern,
+    TorchSmoothQuantizer,
+    TorchWandaPruner,
+    collect_torch_activation_statistics,
+)
+
+statistics = collect_torch_activation_statistics(model, calibration_loader)
+model, pruning = TorchWandaPruner(
+    0.5,
+    pattern=NMPruningPattern(2, 4),
+).prune(model, statistics)
+model, smoothing = TorchSmoothQuantizer().transform(model, statistics)
+```
+
+Wanda scores each linear weight as `abs(weight) * input_activation_l2_norm` and prunes within each
+output row. With a 2:4 constraint, exactly two weights are retained in each contiguous group of
+four along the input-feature axis. This pattern improves storage estimates everywhere, but it only
+receives a compute-speedup credit when the hardware profile declares an exact operator, dtype, and
+2:4 kernel match.
+
+SmoothQuant computes a per-input-channel scale
+`activation_absmax**alpha / weight_absmax**(1-alpha)`, divides activations by that scale, and
+multiplies the matching weight columns by it. `TorchSmoothQuantizer` keeps the division explicit for
+a portable reference path. `fold_smoothquant_layer_norm` instead folds the inverse scale into an
+affine LayerNorm that feeds one or more linear projections, eliminating the runtime division.
+
+The calibration data must represent deployment inputs. After pruning or quantization, evaluate the
+actual task metric on a held-out set and pass that measurement through `QualityConstraint`; output
+MSE from the synthetic example is not a substitute for application accuracy.
+
 ## Polynomial pruning
 
 The schedule implements the requested decay exactly:
@@ -156,16 +207,18 @@ acceptable or when per-channel weight ranges are required.
 For each operator, Edge-Opt computes:
 
 ```text
-operational intensity = executed operations / transferred bytes
+operational intensity = dense-equivalent useful operations / transferred bytes
 ridge point           = peak operations/s / tier bandwidth
 attainable throughput = min(peak operations/s, bandwidth * intensity)
 predicted latency     = max(compute time, transfer time + access latency)
 ```
 
 The operator working set selects the smallest memory tier it fits in. Sparse compute reduces executed
-operations only if the hardware profile says sparse execution is supported. Sparse storage uses the
-configured `bitmap`, `coordinate`, `ideal`, or `dense` encoding and falls back to dense storage when
-metadata would make compression larger.
+operations only when an exact sparse capability matches the operator kind, weight dtype, sparsity,
+and pattern. Sparse storage uses `bitmap`, `coordinate`, `nm`, `ideal`, or `dense` encoding and falls
+back to dense storage when metadata would make compression larger. For a matched sparse kernel, the
+roofline uses dense-equivalent useful work and the declared effective sparse throughput, avoiding a
+double-counted speedup.
 
 For a measured latency distribution, use `benchmark_callable` with warmup iterations and, for
 asynchronous accelerators, a device synchronization callback.
@@ -183,24 +236,44 @@ A profile is ordinary JSON:
     {"name": "L2", "capacity_bytes": 524288, "bandwidth_bytes_per_second": 64000000000},
     {"name": "DRAM", "capacity_bytes": null, "bandwidth_bytes_per_second": 20000000000}
   ],
-  "sparse_compute_supported": true,
+  "sparse_compute_capabilities": [
+    {
+      "operator_kind": "linear",
+      "weight_dtype": "int8",
+      "pattern": "2:4",
+      "effective_peak_ops_per_second": 400000000000,
+      "backend": "measured vendor 2:4 GEMM",
+      "performance_source": "measured"
+    }
+  ],
   "sparse_storage_supported": true
 }
 ```
 
 Use sustained, end-to-end measurements rather than marketing peak values when decisions depend on
-the predicted latency. Cache capacities must be ordered from smallest to largest; the final backing
-tier must be unbounded.
+the predicted latency. A legacy blanket `sparse_compute_supported: true` is rejected because it
+cannot establish which patterns or kernels are executable. Cache capacities must be ordered from
+smallest to largest; the final backing tier must be unbounded.
+
+The bundled `arm_cortex_a76` profile is illustrative and declares no sparse-compute kernel. The
+bundled `nvidia_a100_reference` profile uses vendor-spec dense and 2:4 compute peaks, but its cache
+bandwidth and latency values are illustrative; its reports therefore state that latency is not a
+measured end-to-end result.
 
 ## Project layout
 
 ```text
 src/edge_opt/
+  activation.py         reusable per-channel representative-data statistics
+  comparison.py         evidence-labeled strategy comparison reports
   core.py               portable tensor/operator/model IR
   quantization.py       observers, calibration, and NumPy quantization
   pruning.py            polynomial schedule and magnitude masks
+  smoothquant.py        activation-aware W8A8 channel balancing
+  structured.py         deterministic N:M masks and metadata accounting
+  wanda.py              activation-aware pruning scores and masks
   profiling.py          cache-aware roofline and micro-benchmarking
-  torch_integration.py  optional QAT, pruning adapter, and INT8 export
+  torch_integration.py  optional QAT, modern transforms, and INT8 export
   pipeline.py           optimization transform and strict quality gate
   cli.py                profile, optimize, profiles, and demo commands
 ```
@@ -223,10 +296,16 @@ skipped when the optional extra is absent and run in a dedicated CI job when it 
 
 - Williams, Waterman, and Patterson, [Roofline: an insightful visual performance model for multicore
   architectures](https://doi.org/10.1145/1498765.1498785).
+- Sun et al., [A Simple and Effective Pruning Approach for Large Language
+  Models (Wanda)](https://arxiv.org/abs/2306.11695).
+- Xiao et al., [SmoothQuant: Accurate and Efficient Post-Training Quantization for
+  Large Language Models](https://proceedings.mlr.press/v202/xiao23c.html).
+- Mishra et al., [Accelerating Sparse Deep Neural Networks](https://arxiv.org/abs/2104.08378).
+- Yuan et al., [LLM Inference Unveiled: Survey and Roofline Model
+  Insights](https://arxiv.org/abs/2402.16363).
 - PyTorch, [Quantization-Aware Training](https://pytorch.org/blog/quantization-aware-training/).
 - PyTorch, [torchao quantization workflows](https://docs.pytorch.org/ao/stable/workflows/index.html).
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
-
