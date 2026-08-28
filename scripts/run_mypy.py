@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -19,6 +20,9 @@ def main() -> int:
         "--explicit-package-bases",
         "src/edge_opt",
     ]
+    target_python = os.environ.get("MYPY_PYTHON_VERSION")
+    if target_python:
+        command[3:3] = ["--python-version", target_python]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)

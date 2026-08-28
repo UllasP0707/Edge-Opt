@@ -49,7 +49,9 @@ class NMPruningPattern:
         return cls(n=int(value["n"]), m=int(value["m"]), axis=int(value.get("axis", -1)))
 
 
-def _grouped(values: npt.ArrayLike, pattern: NMPruningPattern) -> tuple[np.ndarray, int]:
+def _grouped(
+    values: npt.ArrayLike, pattern: NMPruningPattern
+) -> tuple[npt.NDArray[np.generic], int]:
     array = np.asarray(values)
     if array.ndim == 0 or array.size == 0:
         raise ConfigurationError("N:M pruning requires a nonempty tensor with rank >= 1")

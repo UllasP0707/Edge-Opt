@@ -25,6 +25,7 @@ jobs:
       - run: ruff check src tests examples scripts
       - run: python scripts/run_mypy.py
         env:
+          MYPY_PYTHON_VERSION: ${{ matrix.python-version }}
           PYTHONPATH: src
       - run: python -m pytest
       - run: python -m build

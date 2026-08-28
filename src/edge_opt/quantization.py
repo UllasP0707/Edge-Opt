@@ -272,13 +272,13 @@ class EntropyObserver:
         if self.range_max > 0.0 and new_range > self.range_max:
             old_width = self.range_max / self.histogram_bins
             old_centers = (np.arange(self.histogram_bins) + 0.5) * old_width
-            self.histogram, _ = np.histogram(
+            rebinned, _ = np.histogram(
                 old_centers,
                 bins=self.histogram_bins,
                 range=(0.0, new_range),
                 weights=self.histogram,
             )
-            self.histogram = self.histogram.astype(np.float64)
+            self.histogram[...] = np.asarray(rebinned, dtype=np.float64)
         additions, _ = np.histogram(
             magnitudes, bins=self.histogram_bins, range=(0.0, new_range)
         )
@@ -325,7 +325,7 @@ class EntropyObserver:
             minimum = max(self.observed_min, -threshold)
             maximum = min(self.observed_max, threshold)
             if minimum == maximum:
-                maximum = minimum + np.finfo(np.float32).eps
+                maximum = minimum + float(np.finfo(np.float32).eps)
         return _quantization_params(minimum, maximum, self.config)
 
 

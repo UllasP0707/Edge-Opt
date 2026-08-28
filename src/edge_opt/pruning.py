@@ -282,7 +282,7 @@ class MagnitudePruner:
         output: dict[str, Array] = {}
         for name, array in arrays.items():
             destination = array if inplace else array.copy()
-            destination *= self.masks[name]
+            destination[~self.masks[name]] = 0
             output[name] = destination
         return output
 
