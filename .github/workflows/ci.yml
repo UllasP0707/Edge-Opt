@@ -22,8 +22,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
-      - run: ruff check src tests examples
-      - run: python -m mypy --no-incremental --explicit-package-bases src/edge_opt
+      - run: ruff check src tests examples scripts
+      - run: python scripts/run_mypy.py
         env:
           PYTHONPATH: src
       - run: python -m pytest
