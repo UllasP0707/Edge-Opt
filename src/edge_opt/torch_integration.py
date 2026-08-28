@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from .activation import ActivationStatisticsTable, ChannelStatsObserver
 from .errors import ConfigurationError
 from .pruning import MagnitudePruner, PolynomialPruningSchedule, PruningStepResult
 from .quantization import QuantizationConfig
@@ -395,6 +396,85 @@ if TORCH_AVAILABLE:
             return self._fake_quantized_output(result)
 
 
+    class TorchActivationStatsCollector:
+        """Collect input-channel statistics from Linear and Conv2d forward hooks."""
+
+        def __init__(
+            self,
+            model: Any,
+            *,
+            module_names: Iterable[str] | None = None,
+            channel_axes: Mapping[str, int] | None = None,
+        ) -> None:
+            self.model = model
+            self.module_names = set(module_names) if module_names is not None else None
+            self.channel_axes = dict(channel_axes or {})
+            self._observers: dict[str, ChannelStatsObserver] = {}
+            self._handles: list[Any] = []
+
+        @property
+        def attached(self) -> bool:
+            return bool(self._handles)
+
+        def _axis_for(self, name: str, module: Any) -> int:
+            if name in self.channel_axes:
+                return self.channel_axes[name]
+            return 1 if isinstance(module, (nn.Conv2d, QATConv2d)) else -1
+
+        def _hook(self, name: str, module: Any) -> Any:
+            def observe(_: Any, inputs: tuple[Any, ...], __: Any) -> None:
+                if not inputs:
+                    raise ConfigurationError(f"module {name!r} received no positional input")
+                values = inputs[0]
+                if not isinstance(values, torch.Tensor):
+                    raise ConfigurationError(
+                        f"module {name!r} input must be a tensor for activation calibration"
+                    )
+                self._observers[name].update(values.detach().to(torch.float64).cpu().numpy())
+
+            return observe
+
+        def attach(self) -> TorchActivationStatsCollector:
+            if self.attached:
+                raise ConfigurationError("activation hooks are already attached")
+            available: set[str] = set()
+            supported = (nn.Linear, nn.Conv2d, QATLinear, QATConv2d)
+            for qualified_name, module in self.model.named_modules():
+                name = qualified_name or "root"
+                if not isinstance(module, supported):
+                    continue
+                available.add(name)
+                if self.module_names is not None and name not in self.module_names:
+                    continue
+                self._observers[name] = ChannelStatsObserver(self._axis_for(name, module))
+                self._handles.append(module.register_forward_hook(self._hook(name, module)))
+            missing = (self.module_names or set()) - available
+            if missing:
+                self.detach()
+                raise ConfigurationError(
+                    f"requested activation modules were not found: {', '.join(sorted(missing))}"
+                )
+            if not self._handles:
+                raise ConfigurationError("model has no selected Linear or Conv2d modules")
+            return self
+
+        def detach(self) -> None:
+            for handle in self._handles:
+                handle.remove()
+            self._handles.clear()
+
+        def table(self) -> ActivationStatisticsTable:
+            return ActivationStatisticsTable(
+                {name: observer.calculate() for name, observer in self._observers.items()}
+            )
+
+        def __enter__(self) -> TorchActivationStatsCollector:
+            return self.attach()
+
+        def __exit__(self, *_: Any) -> None:
+            self.detach()
+
+
 else:
 
     class _MissingTorch:
@@ -407,6 +487,7 @@ else:
     QATConv2d = _MissingTorch
     PackedLinear = _MissingTorch
     PackedConv2d = _MissingTorch
+    TorchActivationStatsCollector = _MissingTorch
 
 
 def _replace_qat_modules(
@@ -467,6 +548,40 @@ def prepare_qat(
 def iter_fake_quantizers(model: Any) -> Iterable[Any]:
     _require_torch()
     return (module for module in model.modules() if isinstance(module, TorchFakeQuantizer))
+
+
+def collect_torch_activation_statistics(
+    model: Any,
+    representative_data: Iterable[Any],
+    *,
+    module_names: Iterable[str] | None = None,
+    channel_axes: Mapping[str, int] | None = None,
+) -> ActivationStatisticsTable:
+    """Run representative inputs and return Linear/Conv2d input-channel statistics."""
+
+    _require_torch()
+    collector = TorchActivationStatsCollector(
+        model, module_names=module_names, channel_axes=channel_axes
+    )
+    was_training = bool(model.training)
+    observed = False
+    try:
+        model.eval()
+        with collector, torch.no_grad():
+            for sample in representative_data:
+                if isinstance(sample, Mapping):
+                    model(**sample)
+                elif isinstance(sample, tuple):
+                    model(*sample)
+                else:
+                    model(sample)
+                observed = True
+    finally:
+        model.train(was_training)
+        collector.detach()
+    if not observed:
+        raise ConfigurationError("representative dataset is empty")
+    return collector.table()
 
 
 def freeze_qat_observers(model: Any) -> int:

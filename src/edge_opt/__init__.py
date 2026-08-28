@@ -1,5 +1,11 @@
 """Edge-Opt public package API."""
 
+from .activation import (
+    ActivationStatisticsCollector,
+    ActivationStatisticsTable,
+    ChannelStatistics,
+    ChannelStatsObserver,
+)
 from .core import DType, ModelSpec, OperatorKind, OperatorSpec, TensorSpec
 from .errors import AccuracyBudgetExceeded, ConfigurationError, EdgeOptError
 from .hardware import BUILTIN_PROFILES, HardwareProfile, MemoryTier, load_builtin_profile
@@ -40,7 +46,9 @@ from .quantization import (
 from .torch_integration import (
     QATConfig,
     QATPreparationReport,
+    TorchActivationStatsCollector,
     TorchMagnitudePruner,
+    collect_torch_activation_statistics,
     convert_qat,
     export_int8_bundle,
     freeze_qat_observers,
@@ -51,10 +59,14 @@ from .torch_integration import (
 
 __all__ = [
     "AccuracyBudgetExceeded",
+    "ActivationStatisticsCollector",
+    "ActivationStatisticsTable",
     "BUILTIN_PROFILES",
     "BenchmarkResult",
     "ConfigurationError",
     "CalibrationTable",
+    "ChannelStatistics",
+    "ChannelStatsObserver",
     "DType",
     "EdgeOptError",
     "EntropyObserver",
@@ -81,8 +93,10 @@ __all__ = [
     "RepresentativeCalibrator",
     "RooflineProfiler",
     "TensorSpec",
+    "TorchActivationStatsCollector",
     "TorchMagnitudePruner",
     "benchmark_callable",
+    "collect_torch_activation_statistics",
     "convert_qat",
     "dequantize",
     "estimate_sparse_storage",

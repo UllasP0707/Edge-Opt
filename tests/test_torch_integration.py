@@ -5,13 +5,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
+from edge_opt.errors import ConfigurationError
 from edge_opt.pruning import PolynomialPruningSchedule
 from edge_opt.torch_integration import (
     PackedLinear,
     QATConfig,
     QATLinear,
+    TorchActivationStatsCollector,
     TorchFakeQuantizer,
     TorchMagnitudePruner,
+    collect_torch_activation_statistics,
     convert_qat,
     export_int8_bundle,
     freeze_qat_observers,
@@ -82,6 +87,23 @@ class TorchQATTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.pruned_parameters, 24)
         self.assertEqual(int(torch.count_nonzero(model.weight)), 8)
+
+    def test_activation_hooks_collect_linear_input_channel_statistics(self) -> None:
+        model = self.make_model()
+        samples = [torch.ones(2, 4), torch.full((1, 4), 2.0)]
+        table = collect_torch_activation_statistics(model, samples)
+        self.assertEqual(set(table.tensors), {"0", "2"})
+        self.assertEqual(table.tensors["0"].channels, 4)
+        self.assertEqual(table.tensors["0"].values_per_channel, 3)
+        np.testing.assert_allclose(table.tensors["0"].l2_norm, np.sqrt(6.0))
+        self.assertEqual(table.tensors["2"].channels, 8)
+        self.assertTrue(model.training)
+
+    def test_activation_collector_rejects_unknown_module(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "were not found"):
+            TorchActivationStatsCollector(
+                self.make_model(), module_names={"missing"}
+            ).attach()
 
 
 if __name__ == "__main__":
