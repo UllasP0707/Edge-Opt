@@ -10,6 +10,7 @@ permissions:
 jobs:
   core:
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.12"]
     runs-on: ubuntu-latest
@@ -22,7 +23,9 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: ruff check src tests examples
-      - run: python -m mypy
+      - run: python -m mypy --no-incremental --explicit-package-bases src/edge_opt
+        env:
+          PYTHONPATH: src
       - run: python -m pytest
       - run: python -m build
       - run: edge-opt demo --output-dir /tmp/edge-opt-demo
