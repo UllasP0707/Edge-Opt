@@ -225,6 +225,9 @@ class ModelProfile:
     predicted_latency_seconds: float
     bottleneck_counts: dict[str, int]
     memory_tier_counts: dict[str, int]
+    latency_evidence: str
+    hardware_profile_source: str
+    hardware_profile_warning: str | None
 
     @property
     def weight_compression_ratio(self) -> float:
@@ -234,6 +237,11 @@ class ModelProfile:
         return {
             "model_name": self.model_name,
             "hardware_name": self.hardware_name,
+            "evidence": {
+                "latency": self.latency_evidence,
+                "hardware_profile_source": self.hardware_profile_source,
+                "warning": self.hardware_profile_warning,
+            },
             "summary": {
                 "total_dense_flops": self.total_dense_flops,
                 "total_executed_flops": self.total_executed_flops,
@@ -261,6 +269,14 @@ class ModelProfile:
             f"# Edge-Opt profile: {self.model_name}",
             "",
             f"Target: **{self.hardware_name}**",
+            "",
+            f"Latency evidence: **{self.latency_evidence.replace('_', ' ')}**",
+            f"Hardware values: {self.hardware_profile_source}",
+            *(
+                [f"Warning: {self.hardware_profile_warning}"]
+                if self.hardware_profile_warning
+                else []
+            ),
             "",
             f"- Predicted latency: {self.predicted_latency_seconds * 1_000:.3f} ms",
             f"- Executed operations: {self.total_executed_flops:,}",
@@ -372,6 +388,15 @@ class RooflineProfiler:
             ),
             bottleneck_counts=dict(Counter(operator.bottleneck for operator in operators)),
             memory_tier_counts=dict(Counter(operator.memory_tier for operator in operators)),
+            latency_evidence="analytical_prediction",
+            hardware_profile_source=str(
+                self.hardware.metadata.get("source", "unspecified")
+            ),
+            hardware_profile_warning=(
+                str(self.hardware.metadata["warning"])
+                if "warning" in self.hardware.metadata
+                else None
+            ),
         )
 
 

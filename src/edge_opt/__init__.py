@@ -6,6 +6,7 @@ from .activation import (
     ChannelStatistics,
     ChannelStatsObserver,
 )
+from .comparison import StrategyComparison, StrategyMeasurement
 from .core import DType, ModelSpec, OperatorKind, OperatorSpec, TensorSpec
 from .errors import AccuracyBudgetExceeded, ConfigurationError, EdgeOptError
 from .hardware import (
@@ -120,6 +121,8 @@ __all__ = [
     "SmoothQuantLinear",
     "SmoothQuantResult",
     "SparseComputeCapability",
+    "StrategyComparison",
+    "StrategyMeasurement",
     "TensorSpec",
     "TorchActivationStatsCollector",
     "TorchMagnitudePruner",

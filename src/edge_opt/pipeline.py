@@ -203,6 +203,14 @@ class OptimizationResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "accepted": self.quality.passed,
+            "evidence": {
+                "quality": "user_supplied_measurement",
+                "latency": self.optimized_profile.latency_evidence,
+                "hardware_profile_source": (
+                    self.optimized_profile.hardware_profile_source
+                ),
+                "warning": self.optimized_profile.hardware_profile_warning,
+            },
             "quality": self.quality.to_dict(),
             "optimization": {
                 "target_sparsity": self.config.target_sparsity,
@@ -239,6 +247,14 @@ class OptimizationResult:
             f"Quality gate: **{quality_status}** — {self.quality.metric_name} degradation "
             f"{self.quality.degradation:.6f} {self.quality.comparison} "
             f"{self.quality.max_degradation:.6f}",
+            "",
+            f"Latency evidence: **{self.optimized_profile.latency_evidence.replace('_', ' ')}**",
+            f"Hardware values: {self.optimized_profile.hardware_profile_source}",
+            *(
+                [f"Warning: {self.optimized_profile.hardware_profile_warning}"]
+                if self.optimized_profile.hardware_profile_warning
+                else []
+            ),
             "",
             "| Metric | Baseline | Optimized | Change |",
             "|---|---:|---:|---:|",
