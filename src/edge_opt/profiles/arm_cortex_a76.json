@@ -21,7 +21,8 @@
   ],
   "metadata": {
     "description": "Analytical Cortex-A76-class reference with a simulated INT8 vector engine",
-    "source": "illustrative-default; replace throughput and bandwidth with target measurements"
+    "source": "illustrative-default; replace throughput and bandwidth with target measurements",
+    "warning": "Predictions are not measured end-to-end latency"
   },
   "name": "ARM Cortex-A76 reference / simulated INT8 engine",
   "peak_ops_per_second": {

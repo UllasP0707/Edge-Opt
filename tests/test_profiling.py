@@ -163,6 +163,7 @@ class ModelProfileTests(unittest.TestCase):
     def test_builtin_profile_is_loadable_and_marked_illustrative(self) -> None:
         profile = load_builtin_profile("arm_cortex_a76")
         self.assertIn("illustrative-default", profile.metadata["source"])
+        self.assertIn("not measured", profile.metadata["warning"].lower())
         self.assertGreater(profile.peak_compute(DType.INT8), profile.peak_compute(DType.FP32))
         self.assertEqual(profile.sparse_compute_capabilities, ())
 

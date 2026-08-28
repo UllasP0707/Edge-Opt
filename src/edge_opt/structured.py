@@ -154,4 +154,3 @@ class NMPruner:
             destination *= result.masks[name]
             output[name] = destination
         return output, result
-
