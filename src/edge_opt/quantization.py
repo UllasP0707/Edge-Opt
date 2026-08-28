@@ -285,7 +285,9 @@ class EntropyObserver:
         self.histogram += additions
         self.range_max = new_range
 
-    def _expanded_quantized_distribution(self, distribution: Array) -> Array:
+    def _expanded_quantized_distribution(
+        self, distribution: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
         expanded = np.zeros_like(distribution, dtype=np.float64)
         for indices in np.array_split(np.arange(distribution.size), self.quantized_bins):
             nonzero = indices[distribution[indices] > 0]
