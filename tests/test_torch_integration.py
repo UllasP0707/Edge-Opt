@@ -9,19 +9,23 @@ import numpy as np
 
 from edge_opt.errors import ConfigurationError
 from edge_opt.pruning import PolynomialPruningSchedule
+from edge_opt.smoothquant import SmoothQuantConfig
 from edge_opt.structured import NMPruningPattern, validate_nm_mask
 from edge_opt.torch_integration import (
     PackedLinear,
     QATConfig,
     QATLinear,
+    SmoothQuantLinear,
     TorchActivationStatsCollector,
     TorchFakeQuantizer,
     TorchMagnitudePruner,
     TorchNMPruner,
+    TorchSmoothQuantizer,
     TorchWandaPruner,
     collect_torch_activation_statistics,
     convert_qat,
     export_int8_bundle,
+    fold_smoothquant_layer_norm,
     freeze_qat_observers,
     is_torch_available,
     prepare_qat,
@@ -142,6 +146,56 @@ class TorchQATTests(unittest.TestCase):
             manifest_path = export_int8_bundle(converted, directory)
             manifest = json.loads(manifest_path.read_text())
         self.assertEqual(manifest["modules"][""]["sparsity_pattern"], "2:4")
+
+    def test_torch_smoothquant_transform_is_equivalent_and_qat_exportable(self) -> None:
+        model = nn.Sequential(nn.Linear(2, 2, bias=True))
+        with torch.no_grad():
+            model[0].weight.copy_(torch.tensor([[0.01, 1.0], [-0.01, 0.5]]))
+        sample = torch.tensor(
+            [[100.0, 1.0], [50.0, -1.0], [-70.0, 0.5], [0.0, 1.0]]
+        )
+        reference = model(sample)
+        statistics = collect_torch_activation_statistics(model, [sample])
+        smoothed, transforms = TorchSmoothQuantizer().transform(model, statistics)
+        self.assertIsInstance(smoothed[0], SmoothQuantLinear)
+        torch.testing.assert_close(smoothed(sample), reference)
+        self.assertEqual(set(transforms), {"0"})
+        self.assertIsInstance(model[0], nn.Linear)
+
+        prepared, report = prepare_qat(smoothed)
+        self.assertEqual(report.linear_modules, 1)
+        self.assertTrue(prepared[0].smoothquant_enabled)
+        prepared(sample)
+        converted = convert_qat(prepared)
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = export_int8_bundle(converted, directory)
+            manifest = json.loads(manifest_path.read_text())
+        metadata = manifest["modules"]["0"]["smoothquant"]
+        self.assertEqual(metadata["alpha"], 0.5)
+        self.assertTrue(metadata["runtime_input_division"])
+
+    def test_smoothquant_can_fold_shared_scales_into_layer_norm(self) -> None:
+        torch.manual_seed(9)
+        layer_norm = nn.LayerNorm(4)
+        projections = (nn.Linear(4, 3), nn.Linear(4, 2))
+        sample = torch.randn(3, 4) * torch.tensor([100.0, 1.0, 4.0, 0.1])
+        normalized = layer_norm(sample)
+        references = tuple(projection(normalized) for projection in projections)
+        absmax = normalized.detach().abs().amax(dim=0).numpy()
+
+        folded = fold_smoothquant_layer_norm(
+            layer_norm,
+            projections,
+            absmax,
+            SmoothQuantConfig(alpha=0.5),
+        )
+        folded_output = folded.layer_norm(sample)
+        for projection, reference in zip(
+            folded.linear_modules, references, strict=True
+        ):
+            torch.testing.assert_close(projection(folded_output), reference)
+        self.assertIsNot(folded.layer_norm, layer_norm)
+        self.assertFalse(hasattr(projections[0], "smoothquant_folded"))
 
 
 if __name__ == "__main__":

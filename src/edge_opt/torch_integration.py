@@ -15,11 +15,21 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
-from .activation import ActivationStatisticsTable, ChannelStatsObserver
+from .activation import (
+    ActivationStatisticsTable,
+    ChannelStatistics,
+    ChannelStatsObserver,
+)
 from .errors import ConfigurationError
 from .pruning import MagnitudePruner, PolynomialPruningSchedule, PruningStepResult
 from .quantization import QuantizationConfig
+from .smoothquant import (
+    SmoothQuantConfig,
+    SmoothQuantResult,
+    apply_smoothquant,
+)
 from .structured import NMPruner, NMPruningPattern, NMPruningResult
 from .wanda import WandaPruner, WandaPruningResult
 
@@ -79,6 +89,15 @@ class QATPreparationReport:
     @property
     def total_modules(self) -> int:
         return self.linear_modules + self.convolution_modules
+
+
+@dataclass(frozen=True)
+class SmoothQuantLayerNormFold:
+    """Explicit LayerNorm-to-linear folding result."""
+
+    layer_norm: Any
+    linear_modules: tuple[Any, ...]
+    transform: SmoothQuantResult
 
 
 if TORCH_AVAILABLE:
@@ -184,6 +203,50 @@ if TORCH_AVAILABLE:
             self.fake_quant_enabled = True
 
 
+    class SmoothQuantLinear(nn.Linear):
+        """Functionally equivalent linear layer with smoothed input/weight ranges."""
+
+        def __init__(self, module: Any, transform: SmoothQuantResult) -> None:
+            super().__init__(
+                module.in_features,
+                module.out_features,
+                bias=module.bias is not None,
+                device=module.weight.device,
+                dtype=module.weight.dtype,
+            )
+            with torch.no_grad():
+                smoothed_weight = torch.as_tensor(
+                    transform.smoothed_weights,
+                    device=module.weight.device,
+                    dtype=module.weight.dtype,
+                )
+                self.weight.copy_(smoothed_weight)
+                if module.bias is not None:
+                    assert self.bias is not None
+                    self.bias.copy_(module.bias)
+            self.weight.requires_grad_(module.weight.requires_grad)
+            if self.bias is not None and module.bias is not None:
+                self.bias.requires_grad_(module.bias.requires_grad)
+            self.register_buffer(
+                "smoothquant_scale",
+                torch.as_tensor(
+                    transform.scales,
+                    device=module.weight.device,
+                    dtype=module.weight.dtype,
+                ),
+            )
+            self.smoothquant_alpha = transform.alpha
+            self.edge_opt_sparsity_pattern = getattr(
+                module, "edge_opt_sparsity_pattern", None
+            )
+            self.train(module.training)
+
+        def forward(self, values: Any) -> Any:
+            return functional.linear(
+                values / self.smoothquant_scale, self.weight, self.bias
+            )
+
+
     class QATLinear(nn.Module):
         """Linear layer with fake-quantized inputs, weights, and outputs."""
 
@@ -195,6 +258,16 @@ if TORCH_AVAILABLE:
             self.bias = module.bias
             self.edge_opt_sparsity_pattern = getattr(
                 module, "edge_opt_sparsity_pattern", None
+            )
+            self.smoothquant_enabled = hasattr(module, "smoothquant_scale")
+            self.smoothquant_alpha = getattr(module, "smoothquant_alpha", None)
+            smoothquant_scale = getattr(
+                module,
+                "smoothquant_scale",
+                torch.ones(self.in_features, device=self.weight.device, dtype=self.weight.dtype),
+            )
+            self.register_buffer(
+                "smoothquant_scale", smoothquant_scale.detach().clone()
             )
             self.input_fake_quant = TorchFakeQuantizer(
                 QuantizationConfig(
@@ -227,6 +300,8 @@ if TORCH_AVAILABLE:
             )
 
         def forward(self, values: Any) -> Any:
+            if self.smoothquant_enabled:
+                values = values / self.smoothquant_scale
             result = functional.linear(
                 self.input_fake_quant(values), self.weight_fake_quant(self.weight), self.bias
             )
@@ -362,6 +437,11 @@ if TORCH_AVAILABLE:
             self.in_features = module.in_features
             self.out_features = module.out_features
             self.edge_opt_sparsity_pattern = module.edge_opt_sparsity_pattern
+            self.smoothquant_enabled = module.smoothquant_enabled
+            self.smoothquant_alpha = module.smoothquant_alpha
+            self.register_buffer(
+                "smoothquant_scale", module.smoothquant_scale.detach().clone()
+            )
             self._initialize_quantized_state(module)
             if module.bias is None:
                 self.register_buffer("bias", None)
@@ -369,6 +449,8 @@ if TORCH_AVAILABLE:
                 self.register_buffer("bias", module.bias.detach().clone())
 
         def forward(self, values: Any) -> Any:
+            if self.smoothquant_enabled:
+                values = values / self.smoothquant_scale
             result = functional.linear(
                 self._fake_quantized_input(values),
                 self._dequantized_weight(values.dtype),
@@ -493,6 +575,7 @@ else:
 
 
     TorchFakeQuantizer = _MissingTorch
+    SmoothQuantLinear = _MissingTorch
     QATLinear = _MissingTorch
     QATConv2d = _MissingTorch
     PackedLinear = _MissingTorch
@@ -592,6 +675,133 @@ def collect_torch_activation_statistics(
     if not observed:
         raise ConfigurationError("representative dataset is empty")
     return collector.table()
+
+
+class TorchSmoothQuantizer:
+    """Apply activation-aware SmoothQuant to selected PyTorch linear modules."""
+
+    def __init__(
+        self,
+        config: SmoothQuantConfig | None = None,
+        *,
+        module_names: Iterable[str] | None = None,
+    ) -> None:
+        _require_torch()
+        self.config = config or SmoothQuantConfig()
+        self.module_names = set(module_names) if module_names is not None else None
+
+    def transform(
+        self,
+        model: Any,
+        activation_statistics: ActivationStatisticsTable,
+        *,
+        inplace: bool = False,
+    ) -> tuple[Any, Mapping[str, SmoothQuantResult]]:
+        """Replace selected linears with equivalent smoothed linear modules."""
+
+        target = model if inplace else copy.deepcopy(model)
+        modules: dict[str, Any] = {}
+        for qualified_name, module in target.named_modules():
+            name = qualified_name or "root"
+            if not isinstance(module, nn.Linear) or isinstance(module, SmoothQuantLinear):
+                continue
+            if self.module_names is not None and name not in self.module_names:
+                continue
+            modules[name] = module
+        if not modules:
+            raise ConfigurationError(
+                "model has no selected unsmoothed linear modules for SmoothQuant"
+            )
+        if self.module_names is not None:
+            missing = self.module_names - set(modules)
+            if missing:
+                raise ConfigurationError(
+                    "requested SmoothQuant modules were not found: "
+                    + ", ".join(sorted(missing))
+                )
+        missing_statistics = set(modules) - set(activation_statistics.tensors)
+        if missing_statistics:
+            raise ConfigurationError(
+                "activation statistics missing for SmoothQuant modules: "
+                + ", ".join(sorted(missing_statistics))
+            )
+
+        transforms = {
+            name: apply_smoothquant(
+                module.weight.detach().cpu().numpy(),
+                activation_statistics.tensors[name],
+                self.config,
+            )
+            for name, module in modules.items()
+        }
+        if "root" in modules:
+            return SmoothQuantLinear(modules["root"], transforms["root"]), transforms
+        for name, module in modules.items():
+            parent_name, _, child_name = name.rpartition(".")
+            parent = target.get_submodule(parent_name) if parent_name else target
+            setattr(parent, child_name, SmoothQuantLinear(module, transforms[name]))
+        return target, transforms
+
+
+def fold_smoothquant_layer_norm(
+    layer_norm: Any,
+    linear_modules: Iterable[Any],
+    activation_statistics: ChannelStatistics | npt.ArrayLike,
+    config: SmoothQuantConfig | None = None,
+    *,
+    inplace: bool = False,
+) -> SmoothQuantLayerNormFold:
+    """Fold SmoothQuant inverse scales into one LayerNorm and its consumer linears.
+
+    This explicit API covers common attention blocks where one LayerNorm feeds
+    multiple projections.  The LayerNorm affine parameters are divided by the
+    shared scale while every consumer's weight columns are multiplied by it, so
+    no runtime input division remains.
+    """
+
+    _require_torch()
+    linears = tuple(linear_modules)
+    if not isinstance(layer_norm, nn.LayerNorm):
+        raise ConfigurationError("SmoothQuant folding requires torch.nn.LayerNorm")
+    if not linears or any(not isinstance(module, nn.Linear) for module in linears):
+        raise ConfigurationError(
+            "SmoothQuant folding requires at least one torch.nn.Linear consumer"
+        )
+    if not layer_norm.elementwise_affine or layer_norm.weight is None:
+        raise ConfigurationError("SmoothQuant folding requires affine LayerNorm")
+    channels = linears[0].in_features
+    if any(module.in_features != channels for module in linears):
+        raise ConfigurationError("SmoothQuant linear consumers must share an input size")
+    if tuple(layer_norm.normalized_shape) != (channels,):
+        raise ConfigurationError(
+            "LayerNorm normalized shape must match the linear input channels"
+        )
+
+    target_layer_norm = layer_norm if inplace else copy.deepcopy(layer_norm)
+    target_linears = linears if inplace else tuple(copy.deepcopy(module) for module in linears)
+    combined_weights = np.concatenate(
+        [module.weight.detach().cpu().numpy() for module in target_linears], axis=0
+    )
+    transform = apply_smoothquant(
+        combined_weights, activation_statistics, config or SmoothQuantConfig()
+    )
+    with torch.no_grad():
+        norm_scale = torch.as_tensor(
+            transform.scales,
+            device=target_layer_norm.weight.device,
+            dtype=target_layer_norm.weight.dtype,
+        )
+        target_layer_norm.weight.div_(norm_scale)
+        if target_layer_norm.bias is not None:
+            target_layer_norm.bias.div_(norm_scale)
+        for module in target_linears:
+            weight_scale = norm_scale.to(
+                device=module.weight.device, dtype=module.weight.dtype
+            )
+            module.weight.mul_(weight_scale)
+            module.smoothquant_alpha = transform.alpha
+            module.smoothquant_folded = True
+    return SmoothQuantLayerNormFold(target_layer_norm, target_linears, transform)
 
 
 def freeze_qat_observers(model: Any) -> int:
@@ -814,6 +1024,12 @@ def export_int8_bundle(model: Any, directory: str | Path) -> Path:
         }
         if module.edge_opt_sparsity_pattern is not None:
             module_manifest["sparsity_pattern"] = module.edge_opt_sparsity_pattern
+        if isinstance(module, PackedLinear) and module.smoothquant_enabled:
+            module_manifest["smoothquant"] = {
+                "alpha": module.smoothquant_alpha,
+                "input_channel_scale": module.smoothquant_scale.detach().cpu().tolist(),
+                "runtime_input_division": True,
+            }
         manifest["modules"][name] = module_manifest
     if not manifest["modules"]:
         raise ConfigurationError("model does not contain converted INT8 modules")
